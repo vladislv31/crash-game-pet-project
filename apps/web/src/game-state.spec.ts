@@ -227,4 +227,109 @@ describe('reduce', () => {
       expect(state.lastError).toBeNull();
     });
   });
+
+  describe('retrying requests after a reconnect', () => {
+    const BET = { type: 'bet', requestId: 'r1', amount: '100' } as const;
+    const CASHOUT = { type: 'cashout', requestId: 'r2' } as const;
+
+    function sent(state: GameState, message: typeof BET | typeof CASHOUT): GameState {
+      return reduce(state, { type: 'request', message });
+    }
+
+    function reconnected(state: GameState, snapshot: Partial<typeof SNAPSHOT> = {}): GameState {
+      return receive(reduce(state, { type: 'socket_closed' }), {
+        ...SNAPSHOT,
+        ...snapshot,
+      } as ServerMessage);
+    }
+
+    const RUNNING = {
+      round: { id: 'round-1', phase: 'RUNNING' as const, bettingEndsAt: 16_000, startedAt: 16_000 },
+    };
+
+    it('remembers a request until its answer arrives', () => {
+      const pending = sent(connected(), BET);
+      expect(pending.pending).toEqual(BET);
+
+      const answered = receive(pending, {
+        type: 'bet:accepted',
+        requestId: 'r1',
+        bet: bet(),
+        balance: '4900',
+      });
+      expect(answered.pending).toBeNull();
+    });
+
+    it('forgets a request rejected for a business reason', () => {
+      const state = receive(sent(connected(), BET), {
+        type: 'error',
+        requestId: 'r1',
+        code: 'betting_closed',
+      });
+
+      expect(state.pending).toBeNull();
+    });
+
+    it('keeps a request rejected as unavailable, to retry it after reconnecting', () => {
+      const state = receive(sent(connected(), BET), {
+        type: 'error',
+        requestId: 'r1',
+        code: 'unavailable',
+      });
+
+      expect(state.pending).toEqual(BET);
+    });
+
+    it('ignores answers to other requests', () => {
+      const state = receive(sent(connected(), BET), {
+        type: 'error',
+        requestId: 'other',
+        code: 'betting_closed',
+      });
+
+      expect(state.pending).toEqual(BET);
+    });
+
+    it('retries a pending bet while betting is still open', () => {
+      expect(reconnected(sent(connected(), BET)).pending).toEqual(BET);
+    });
+
+    it('drops a pending bet that the snapshot shows was placed', () => {
+      expect(reconnected(sent(connected(), BET), { bet: bet() }).pending).toBeNull();
+    });
+
+    it('drops a pending bet when betting closed while reconnecting', () => {
+      expect(reconnected(sent(connected(), BET), RUNNING).pending).toBeNull();
+    });
+
+    it('retries a pending cashout while the round runs and the bet is active', () => {
+      const state = reconnected(sent(connected(), CASHOUT), { ...RUNNING, bet: bet() });
+
+      expect(state.pending).toEqual(CASHOUT);
+    });
+
+    it('drops a pending cashout that the snapshot shows was paid', () => {
+      const paid = bet({ status: 'CASHED_OUT', cashoutMultiplier: 150, payout: '150' });
+
+      expect(reconnected(sent(connected(), CASHOUT), { ...RUNNING, bet: paid }).pending).toBeNull();
+    });
+
+    it('counts snapshots, so the client knows when to retry', () => {
+      expect(reconnected(connected()).snapshots).toBe(connected().snapshots + 1);
+    });
+  });
+
+  describe('refunds', () => {
+    it('shows a refunded bet', () => {
+      const refunded = bet({ status: 'VOID' });
+
+      const state = receive(
+        connected(),
+        { type: 'bet:accepted', requestId: 'r1', bet: bet(), balance: '4900' },
+        { type: 'bet:refunded', bet: refunded },
+      );
+
+      expect(state.myBet).toEqual(refunded);
+    });
+  });
 });

@@ -1,4 +1,4 @@
-import type { BetView, RoundPhase, ServerMessage } from '@crash/contracts';
+import type { BetView, ClientMessage, RoundPhase, ServerMessage } from '@crash/contracts';
 
 const HISTORY_SIZE = 20;
 
@@ -25,11 +25,16 @@ export interface GameState {
   /** Recent crash points, newest first. */
   history: number[];
   lastError: string | null;
+  /** The last request without an answer yet; retried with the same requestId after a reconnect. */
+  pending: ClientMessage | null;
+  /** Increases with every snapshot, i.e. every (re)connect. */
+  snapshots: number;
 }
 
 export type GameAction =
   | { type: 'socket_open' }
   | { type: 'socket_closed' }
+  | { type: 'request'; message: ClientMessage }
   | { type: 'message'; message: ServerMessage; localTime: number };
 
 export const INITIAL_STATE: GameState = {
@@ -42,6 +47,8 @@ export const INITIAL_STATE: GameState = {
   bets: [],
   history: [],
   lastError: null,
+  pending: null,
+  snapshots: 0,
 };
 
 export function reduce(state: GameState, action: GameAction): GameState {
@@ -50,6 +57,8 @@ export function reduce(state: GameState, action: GameAction): GameState {
       return { ...state, status: 'connecting' };
     case 'socket_closed':
       return { ...state, status: 'disconnected' };
+    case 'request':
+      return { ...state, pending: action.message };
     case 'message':
       return applyMessage(state, action.message, action.localTime);
   }
@@ -57,8 +66,8 @@ export function reduce(state: GameState, action: GameAction): GameState {
 
 function applyMessage(state: GameState, message: ServerMessage, localTime: number): GameState {
   switch (message.type) {
-    case 'snapshot':
-      return {
+    case 'snapshot': {
+      const synced: GameState = {
         ...state,
         status: 'connected',
         username: message.username,
@@ -67,7 +76,10 @@ function applyMessage(state: GameState, message: ServerMessage, localTime: numbe
         round: message.round ? { ...message.round, multiplier: 100, crashPoint: null } : null,
         myBet: message.bet,
         bets: message.bet ? [message.bet] : [],
+        snapshots: state.snapshots + 1,
       };
+      return { ...synced, pending: stillNeeded(state.pending, synced) };
+    }
     case 'round:betting':
       return {
         ...state,
@@ -100,15 +112,46 @@ function applyMessage(state: GameState, message: ServerMessage, localTime: numbe
       };
     case 'bet:placed':
     case 'bet:cashed_out':
+    case 'bet:refunded':
       return withBet(state, message.bet);
     case 'bet:accepted':
     case 'cashout:accepted':
-      return { ...withBet(state, message.bet), balance: message.balance, lastError: null };
+      return {
+        ...withBet(state, message.bet),
+        balance: message.balance,
+        lastError: null,
+        pending: answered(state.pending, message.requestId) ? null : state.pending,
+      };
     case 'balance':
       return { ...state, balance: message.balance };
-    case 'error':
-      return { ...state, lastError: describeError(message.code, message.errors) };
+    case 'error': {
+      // "unavailable" means the server is restarting: keep the request to retry after reconnecting.
+      const forget = message.code !== 'unavailable' && answered(state.pending, message.requestId);
+      return {
+        ...state,
+        lastError: describeError(message.code, message.errors),
+        pending: forget ? null : state.pending,
+      };
+    }
   }
+}
+
+function answered(pending: ClientMessage | null, requestId: string | undefined): boolean {
+  return pending !== null && pending.requestId === requestId;
+}
+
+/** Whether a request that got no answer before the connection dropped still makes sense to retry. */
+function stillNeeded(pending: ClientMessage | null, synced: GameState): ClientMessage | null {
+  if (!pending) {
+    return null;
+  }
+
+  const phase = synced.round?.phase;
+  if (pending.type === 'bet') {
+    return phase === 'BETTING' && !synced.myBet ? pending : null;
+  }
+
+  return phase === 'RUNNING' && synced.myBet?.status === 'ACTIVE' ? pending : null;
 }
 
 function updateRound(state: GameState, roundId: string, changes: Partial<RoundState>): GameState {

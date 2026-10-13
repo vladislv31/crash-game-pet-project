@@ -46,10 +46,11 @@ function flush(): Promise<void> {
 }
 
 function setup(crashPoint = 500) {
-  const store = new InMemoryStore();
+  const store = new InMemoryStore(() => STARTED_AT - 1_000);
   const auth = new AuthService(store);
   const listeners: ((event: GameEvent) => void)[] = [];
   const round = new Round('round-1', crashPoint);
+  void store.create({ id: round.id, crashPoint, bettingEndsAt: STARTED_AT });
   const game: GatewayGame = {
     currentRound: round,
     subscribe: listener => listeners.push(listener),
@@ -83,7 +84,7 @@ function setup(crashPoint = 500) {
     return socket;
   }
 
-  return { store, round, gateway, emitGameEvent, connect };
+  return { store, round, gateway, betting, emitGameEvent, connect };
 }
 
 describe('GameGateway', () => {
@@ -350,6 +351,65 @@ describe('GameGateway', () => {
       emitGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 123 });
 
       expect(socket.last()?.type).toBe('snapshot');
+    });
+  });
+
+  describe('refunds', () => {
+    it('announces a refunded bet and sends the new balance to its owner only', async () => {
+      const { connect, store, betting } = setup();
+      const alice = await connect('alice');
+      const bob = await connect('bob');
+      alice.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+      await flush();
+      await store.create({ id: 'round-2', crashPoint: 200, bettingEndsAt: STARTED_AT });
+
+      await betting.handleGameEvent({ type: 'betting', roundId: 'round-2', endsAt: STARTED_AT });
+
+      expect(alice.sent).toContainEqual({ type: 'balance', balance: '5000' });
+      expect(bob.last()).toEqual({
+        type: 'bet:refunded',
+        bet: expect.objectContaining({ username: 'alice', status: 'VOID' }),
+      });
+      expect(bob.sent).not.toContainEqual(expect.objectContaining({ type: 'balance' }));
+    });
+  });
+
+  describe('shutdown', () => {
+    it('answers new requests with unavailable while shutting down', async () => {
+      const { connect, gateway } = setup();
+      const socket = await connect();
+      const shuttingDown = gateway.beforeApplicationShutdown();
+
+      socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+      await shuttingDown;
+
+      expect(socket.sent).toContainEqual({ type: 'error', requestId: 'r1', code: 'unavailable' });
+    });
+
+    it('waits for requests already in progress before closing sockets for a reconnect', async () => {
+      const { connect, gateway, store } = setup();
+      const socket = await connect();
+      let finishWrite = () => undefined as void;
+      const realPlaceBet = store.placeBet.bind(store);
+      jest
+        .spyOn(store, 'placeBet')
+        .mockImplementationOnce(
+          input => new Promise(resolve => (finishWrite = () => resolve(realPlaceBet(input)))),
+        );
+      socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+      await flush();
+
+      let closed = false;
+      const shuttingDown = gateway.beforeApplicationShutdown().then(() => (closed = true));
+      await flush();
+      expect(closed).toBe(false);
+      expect(socket.closeCode).toBeNull();
+
+      finishWrite();
+      await shuttingDown;
+
+      expect(socket.sent).toContainEqual(expect.objectContaining({ type: 'bet:accepted' }));
+      expect(socket.closeCode).toBe(1012);
     });
   });
 });

@@ -8,7 +8,7 @@ import { Bet } from './bet';
 import { effectiveTarget, parseAutoCashout, parseBetAmount, payoutFor } from './bet-rules';
 import { BettingError } from './betting.errors';
 import { BETS_STORE } from './bets.store';
-import type { BetsStore } from './bets.store';
+import type { BetsStore, BetWithBalance } from './bets.store';
 
 export interface GameSource {
   readonly currentRound: Round | null;
@@ -16,7 +16,9 @@ export interface GameSource {
 }
 
 export type BettingEvent =
-  { type: 'bet_placed'; bet: Bet } | { type: 'cashed_out'; bet: Bet; balance: string };
+  | { type: 'bet_placed'; bet: Bet }
+  | { type: 'cashed_out'; bet: Bet; balance: string }
+  | { type: 'refunded'; bet: Bet; balance: string };
 
 export interface PlaceBetRequest {
   requestId: string;
@@ -36,8 +38,8 @@ export class BettingService implements OnModuleInit {
   private readonly listeners: ((event: BettingEvent) => void)[] = [];
   /** Active bets with their auto-cashout target, per round. Only for auto-cashout; the store stays the source of truth. */
   private readonly tracked = new Map<string, Map<string, TrackedBet>>();
-  /** Crashed rounds waiting to be settled when the next round opens. */
-  private readonly crashedRounds = new Map<string, number>();
+  /** Money operations still running, so shutdown can wait for them. */
+  private readonly inFlight = new Set<Promise<void>>();
 
   constructor(
     @Inject(BETS_STORE) private readonly store: BetsStore,
@@ -56,7 +58,30 @@ export class BettingService implements OnModuleInit {
     this.listeners.push(listener);
   }
 
-  async placeBet(user: User, request: PlaceBetRequest): Promise<{ bet: Bet; balance: string }> {
+  /** Resolves once every money operation that already started has finished. */
+  async drain(): Promise<void> {
+    await Promise.allSettled(this.inFlight);
+  }
+
+  /** A retried `requestId` returns the original bet in any phase; the same id with a different bet is a conflict. */
+  placeBet(user: User, request: PlaceBetRequest): Promise<BetWithBalance> {
+    return this.track(this.placeBetNow(user, request));
+  }
+
+  /** `receivedAt` is the server time the request arrived; it alone decides the multiplier (ADR-0002). */
+  cashOut(user: User, receivedAt: number): Promise<BetWithBalance> {
+    return this.track(this.cashOutNow(user, receivedAt));
+  }
+
+  findUserBet(userId: string, roundId: string): Promise<Bet | null> {
+    return this.store.findUserBet(userId, roundId);
+  }
+
+  handleGameEvent(event: GameEvent): Promise<void> {
+    return this.track(this.handleGameEventNow(event));
+  }
+
+  private async placeBetNow(user: User, request: PlaceBetRequest): Promise<BetWithBalance> {
     const amount = parseBetAmount(request.amount);
     const autoCashout = parseAutoCashout(request.autoCashout);
     if (!amount.ok || !autoCashout.ok) {
@@ -66,11 +91,23 @@ export class BettingService implements OnModuleInit {
       });
     }
 
-    const round = this.bettingRound();
+    // Read before any await: whether betting is open is decided when the request arrives.
+    const round = this.game.currentRound;
+    const bettingRound = round?.phase === 'BETTING' ? round : null;
+
+    const previous = await this.store.findBetByRequest(user.id, request.requestId);
+    if (previous) {
+      return asRetryOf(previous, amount.value, autoCashout.value);
+    }
+
+    if (!bettingRound) {
+      throw new BettingError('betting_closed');
+    }
+
     const result = await this.store.placeBet({
       userId: user.id,
       username: user.username,
-      roundId: round.id,
+      roundId: bettingRound.id,
       amount: amount.value,
       autoCashout: autoCashout.value,
       idempotencyKey: request.requestId,
@@ -80,72 +117,79 @@ export class BettingService implements OnModuleInit {
       throw new BettingError(result.status);
     }
 
-    if (result.status === 'placed') {
-      this.track(result.bet);
-      this.emit({ type: 'bet_placed', bet: result.bet });
+    if (result.status === 'duplicate') {
+      return asRetryOf(result, amount.value, autoCashout.value);
     }
+
+    this.trackAutoCashout(result.bet);
+    this.emit({ type: 'bet_placed', bet: result.bet });
 
     return { bet: result.bet, balance: result.balance };
   }
 
-  /** `receivedAt` is the server time the request arrived; it alone decides the multiplier (ADR-0002). */
-  async cashOut(user: User, receivedAt: number): Promise<{ bet: Bet; balance: string }> {
+  private async cashOutNow(user: User, receivedAt: number): Promise<BetWithBalance> {
     const round = this.game.currentRound;
     if (!round) {
       throw new BettingError('cashout_closed');
     }
 
+    // Read before any await: the multiplier is the one at receipt time.
     const multiplier = this.cashoutMultiplier(round, receivedAt);
     const bet = await this.store.findUserBet(user.id, round.id);
+    if (bet?.status === 'CASHED_OUT') {
+      return { bet, balance: await this.store.getBalance(user.id) };
+    }
+
+    if (multiplier === null) {
+      throw new BettingError('cashout_closed');
+    }
+
     if (!bet) {
       throw new BettingError('no_active_bet');
     }
 
-    const paidMultiplier = Math.min(multiplier, effectiveTarget(bet.amount, bet.autoCashout));
-    const result = await this.settleAsWin(bet, paidMultiplier);
-    if (!result) {
+    if (bet.status !== 'ACTIVE') {
       throw new BettingError('already_settled');
     }
 
-    return result;
+    const paidMultiplier = Math.min(multiplier, effectiveTarget(bet.amount, bet.autoCashout));
+    const result = await this.settleAsWin(bet, paidMultiplier);
+    if (result) {
+      return result;
+    }
+
+    // A concurrent cashout or auto-cashout won the race: answer with its result.
+    const settled = await this.store.findUserBet(user.id, round.id);
+    if (settled?.status === 'CASHED_OUT') {
+      return { bet: settled, balance: await this.store.getBalance(user.id) };
+    }
+    throw new BettingError('already_settled');
   }
 
-  findUserBet(userId: string, roundId: string): Promise<Bet | null> {
-    return this.store.findUserBet(userId, roundId);
-  }
-
-  async handleGameEvent(event: GameEvent): Promise<void> {
+  private async handleGameEventNow(event: GameEvent): Promise<void> {
     switch (event.type) {
       case 'tick':
         await this.autoCashOut(event.roundId, target => target <= event.multiplier);
         return;
       case 'crashed':
-        this.crashedRounds.set(event.roundId, event.crashPoint);
         await this.autoCashOut(event.roundId, target => target < event.crashPoint);
         return;
       case 'betting':
-        await this.settleCrashedRounds();
+        await this.settleFinishedRounds(event.roundId);
         return;
       case 'started':
+        await this.loadAutoCashouts(event.roundId);
         return;
     }
   }
 
-  private bettingRound(): Round {
-    const round = this.game.currentRound;
-    if (!round || round.phase !== 'BETTING') {
-      throw new BettingError('betting_closed');
-    }
-
-    return round;
-  }
-
-  private cashoutMultiplier(round: Round, receivedAt: number): number {
+  /** The multiplier at receipt time, or null when the round no longer accepts cashouts. */
+  private cashoutMultiplier(round: Round, receivedAt: number): number | null {
     try {
       return round.cashOut(receivedAt);
     } catch (error) {
       if (error instanceof RoundStateError) {
-        throw new BettingError('cashout_closed');
+        return null;
       }
       throw error;
     }
@@ -167,33 +211,56 @@ export class BettingService implements OnModuleInit {
     await Promise.all(due.map(({ bet, target }) => this.settleAsWin(bet, target)));
   }
 
-  private async settleCrashedRounds(): Promise<void> {
-    const rounds = [...this.crashedRounds];
-    this.crashedRounds.clear();
+  /**
+   * Settles every ACTIVE bet of every round except the current one, from the store, so bets left by a
+   * restart are settled too. Crashed rounds settle normally; rounds interrupted before their crash was
+   * recorded are voided and refunded. A failed bet is logged and retried next time.
+   */
+  private async settleFinishedRounds(currentRoundId: string): Promise<void> {
+    for (const roundId of this.tracked.keys()) {
+      if (roundId !== currentRoundId) {
+        this.tracked.delete(roundId);
+      }
+    }
 
-    await Promise.all(rounds.map(([roundId, crashPoint]) => this.settleRound(roundId, crashPoint)));
-  }
-
-  private async settleRound(roundId: string, crashPoint: number): Promise<void> {
-    this.tracked.delete(roundId);
-    const activeBets = await this.store.findActiveBets(roundId);
-
-    await Promise.all(
-      activeBets.map(async bet => {
-        const target = effectiveTarget(bet.amount, bet.autoCashout);
-        if (target < crashPoint) {
-          await this.settleAsWin(bet, target);
-          return;
-        }
-        await this.store.markLost(bet.id);
-      }),
+    const unsettled = await this.store.findUnsettledBets(currentRoundId);
+    const results = await Promise.allSettled(
+      unsettled.map(({ bet, crashPoint, roundCrashed }) =>
+        roundCrashed ? this.settle(bet, crashPoint) : this.refund(bet),
+      ),
     );
+
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        this.logger.error({ message: 'Failed to settle bet', error: result.reason as unknown });
+      }
+    }
   }
 
-  private async settleAsWin(
-    bet: Bet,
-    multiplier: number,
-  ): Promise<{ bet: Bet; balance: string } | null> {
+  private async settle(bet: Bet, crashPoint: number): Promise<void> {
+    const target = effectiveTarget(bet.amount, bet.autoCashout);
+    if (target < crashPoint) {
+      await this.settleAsWin(bet, target);
+      return;
+    }
+
+    await this.store.markLost(bet.id);
+  }
+
+  private async refund(bet: Bet): Promise<void> {
+    const result = await this.store.refund(bet.id);
+    if (result) {
+      this.emit({ type: 'refunded', ...result });
+    }
+  }
+
+  /** Re-reads the round's bets when it starts, so auto-cashouts survive a restart in the middle of a round. */
+  private async loadAutoCashouts(roundId: string): Promise<void> {
+    const bets = await this.store.findActiveBets(roundId);
+    bets.forEach(bet => this.trackAutoCashout(bet));
+  }
+
+  private async settleAsWin(bet: Bet, multiplier: number): Promise<BetWithBalance | null> {
     const result = await this.store.cashOut({
       betId: bet.id,
       multiplier,
@@ -208,8 +275,8 @@ export class BettingService implements OnModuleInit {
     return result;
   }
 
-  private track(bet: Bet): void {
-    // A bet committed after its round moved on is settled when the next round opens instead.
+  private trackAutoCashout(bet: Bet): void {
+    // Bets must commit before their round starts (ADR-0004), so this is only a guard: a stray bet is left to the settlement sweep.
     if (this.game.currentRound?.id !== bet.roundId) {
       return;
     }
@@ -219,7 +286,30 @@ export class BettingService implements OnModuleInit {
     this.tracked.set(bet.roundId, bets);
   }
 
+  private track<T>(operation: Promise<T>): Promise<T> {
+    const settled = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.inFlight.add(settled);
+    void settled.finally(() => this.inFlight.delete(settled));
+
+    return operation;
+  }
+
   private emit(event: BettingEvent): void {
     this.listeners.forEach(listener => listener(event));
   }
+}
+
+function asRetryOf(
+  previous: BetWithBalance,
+  amount: string,
+  autoCashout: number | null,
+): BetWithBalance {
+  if (previous.bet.amount !== amount || previous.bet.autoCashout !== autoCashout) {
+    throw new BettingError('request_conflict');
+  }
+
+  return previous;
 }

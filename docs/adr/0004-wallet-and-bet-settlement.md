@@ -23,7 +23,7 @@ Bets move money: a bet debits the balance, a cashout credits it. Experiment 4 se
 
 - `users.balance` `numeric(40,18)` plus an append-only `ledger_entries` table (`INITIAL`, `BET`, `WIN`). Both change in the same transaction.
 - `bets`: `ACTIVE → CASHED_OUT | LOST`, with `cashout_multiplier` and `payout`.
-- `rounds`: crash point and phase timestamps, written when the round is created, before bets reach the database.
+- `rounds`: crash point and phase timestamps. The row is written **before betting opens**; betting waits for the write, and a failed write skips to a new round after the pause.
 - Money math in JS uses `decimal.js`, never `number`.
 
 ### Placing a bet
@@ -32,18 +32,20 @@ One transaction:
 
 1. Debit with a conditional update: `UPDATE users SET balance = balance - :amount WHERE id = :id AND balance >= :amount`. No row → `insufficient_funds`.
 2. Insert the bet and a `BET` ledger entry.
+3. Last statement before commit: `SELECT clock_timestamp() < betting_ends_at FROM rounds WHERE id = :roundId`. False or no round → roll back → `betting_closed`.
 
 Unique constraints:
 
 - `(user_id, idempotency_key)`: a retried `bet` with the same `requestId` returns the original bet and never debits twice.
 - `(user_id, round_id)`: one bet per round → `already_bet`.
 
-Betting must be open when the message is received.
+A bet takes part in a round only if it is **both** received while betting is open **and** committed before the round starts, with or without auto-cashout. A bet whose write would land after the start is not created at all: the rollback undoes the debit, so there is nothing to refund. Without this rule a slow commit could put a bet into a round the player could no longer act in, and it would be settled as lost.
 
 ### Cashout (exactly once)
 
 - The multiplier comes from the round at receipt time (ADR-0002).
-- One transaction: `UPDATE bets SET status = 'CASHED_OUT' … WHERE id = :id AND status = 'ACTIVE'`. Only if that changed a row: credit the balance and insert a `WIN` entry. Zero rows → `already_settled`.
+- One transaction: `UPDATE bets SET status = 'CASHED_OUT' … WHERE id = :id AND status = 'ACTIVE'`. Only if that changed a row: credit the balance and insert a `WIN` entry.
+- Zero rows: if the bet is `CASHED_OUT` (a repeated or concurrent cashout, or an auto-cashout that came first), the original result is returned; otherwise `already_settled`.
 - The database decides the winner of concurrent cashouts, so this holds across instances.
 
 ### Auto-cashout and max win
@@ -56,11 +58,21 @@ Betting must be open when the message is received.
 ### Settling a round
 
 - Losing bets are **not** closed at the crash: a cashout received just before the crash may still be in its transaction.
-- When the next round opens betting (5 s after the crash), each remaining `ACTIVE` bet of the previous round is settled: target below the crash point → cashed out at the target (covers bets committed too late to be tracked), otherwise `LOST`.
+- App transactions are bounded: at most 1 s waiting for a pooled connection, at most 3 s per transaction (PostgreSQL `transaction_timeout`). Together they stay below the 5 s pause, so an in-flight cashout commits or fails before settlement starts. The migration CLI has no such limits.
+- Every time a round opens betting, a **settlement sweep** settles every `ACTIVE` bet of every other round, using what is stored in `rounds`:
+  - crashed (`crashed_at` set): target below the crash point → cashed out at the target, otherwise `LOST`;
+  - interrupted (no `crashed_at`: the server was down when the round should have crashed): **voided**, status `VOID`, the amount is returned with a `REFUND` ledger entry. This follows the usual "malfunction voids all pays and plays" rule: players could not cash out while the server was down.
+- The sweep reads the database, not memory, so it also settles bets left by a crash or restart of the instance. A bet that fails to settle is logged and retried by the next sweep. Settling and refunding are idempotent through `WHERE status = 'ACTIVE'`.
+- A round continued after a restart (ADR-0002) reloads its bets from the database when it starts, so their auto-cashouts still fire.
+
+### Shutdown
+
+- On shutdown the server stops taking requests, waits for bets, cashouts and settlements already in progress, waits for pending round writes, and only then closes the database connection. Nothing is cut off mid-transaction; anything not started is retried by the client (ADR-0003) or settled by the next instance.
 
 ## Alternatives
 
 - **Balance as a sum of the ledger:** no balance column to keep in sync, but every bet needs an aggregate. Rejected for now.
+- **Settle interrupted rounds by their crash point** (or pay auto-cashouts and refund the rest): players without auto-cashout could not act while the server was down, so it is unfair to them; the mixed variant always costs the house. Rejected in favour of a full refund.
 - **Mark losers at the crash:** simpler, but races with in-flight cashouts and can take a valid win away.
 - **Redis locks for exactly-once:** extra moving part; the conditional update already guarantees it.
 
@@ -69,3 +81,5 @@ Betting must be open when the message is received.
 - Correctness relies on SQL conditional updates and unique constraints, so the core money paths need integration tests against a real PostgreSQL.
 - Active bets for auto-cashout are tracked in memory per instance. Phase 5 (several instances) must revisit this.
 - Players see losing bets settled about 5 s after the crash.
+- The late-bet check compares the database clock with `betting_ends_at`, which the game server computed from its own clock. Fine on one host; several hosts need synchronized clocks (NTP).
+- The sweep scans `ACTIVE` bets on every round opening; the existing `(round_id, status)` index does not serve a status-only filter. Acceptable now, revisit before load experiments (e.g. a partial index on `status = 'ACTIVE'`).

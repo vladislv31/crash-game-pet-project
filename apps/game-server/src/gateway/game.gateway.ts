@@ -1,7 +1,7 @@
 import { IncomingMessage } from 'node:http';
 
 import type { RoundView, ServerMessage } from '@crash/contracts';
-import { Inject, Logger, OnModuleInit } from '@nestjs/common';
+import { BeforeApplicationShutdown, Inject, Logger, OnModuleInit } from '@nestjs/common';
 import { OnGatewayConnection, OnGatewayDisconnect, WebSocketGateway } from '@nestjs/websockets';
 import { RawData, WebSocket } from 'ws';
 
@@ -13,6 +13,8 @@ import { User } from '../users/user';
 import { ParsedClientMessage, parseClientMessage, toBetView, toRoundMessage } from './messages';
 
 const UNAUTHORIZED_CLOSE_CODE = 4401;
+// Standard WebSocket code "service restart": clients reconnect, e.g. to another instance.
+const RESTART_CLOSE_CODE = 1012;
 
 export interface GatewayGame extends GameSource {
   currentRoundView(): RoundView | null;
@@ -25,10 +27,15 @@ interface Session {
 /** WebSocket protocol from ADR-0003. Broadcasts one message per event, without batching. */
 @WebSocketGateway({ path: '/ws' })
 export class GameGateway
-  implements OnGatewayConnection<WebSocket>, OnGatewayDisconnect<WebSocket>, OnModuleInit
+  implements
+    OnGatewayConnection<WebSocket>,
+    OnGatewayDisconnect<WebSocket>,
+    OnModuleInit,
+    BeforeApplicationShutdown
 {
   private readonly logger = new Logger(GameGateway.name);
   private readonly sessions = new Map<WebSocket, Session>();
+  private shuttingDown = false;
 
   constructor(
     private readonly auth: AuthService,
@@ -41,7 +48,26 @@ export class GameGateway
     this.betting.subscribe(event => this.handleBettingEvent(event));
   }
 
+  /**
+   * Runs before the database closes: stop taking requests, let the ones in progress finish,
+   * then ask clients to reconnect. The next instance continues the round from the database.
+   */
+  async beforeApplicationShutdown(): Promise<void> {
+    this.shuttingDown = true;
+    await this.betting.drain();
+
+    for (const client of this.sessions.keys()) {
+      client.close(RESTART_CLOSE_CODE, 'restarting');
+    }
+    this.sessions.clear();
+  }
+
   handleConnection(client: WebSocket, request: IncomingMessage): void {
+    if (this.shuttingDown) {
+      client.close(RESTART_CLOSE_CODE, 'restarting');
+      return;
+    }
+
     const session: Session = { user: null };
     this.sessions.set(client, session);
     client.on('message', (data: RawData) => {
@@ -105,6 +131,11 @@ export class GameGateway
     }
 
     const { message } = parsed;
+    if (this.shuttingDown) {
+      this.send(client, { type: 'error', requestId: message.requestId, code: 'unavailable' });
+      return;
+    }
+
     if (!session.user) {
       this.send(client, { type: 'error', requestId: message.requestId, code: 'unauthorized' });
       return;
@@ -148,15 +179,26 @@ export class GameGateway
   }
 
   private handleBettingEvent(event: BettingEvent): void {
-    if (event.type === 'bet_placed') {
-      this.broadcast({ type: 'bet:placed', bet: toBetView(event.bet) });
-      return;
+    const bet = toBetView(event.bet);
+    switch (event.type) {
+      case 'bet_placed':
+        this.broadcast({ type: 'bet:placed', bet });
+        return;
+      case 'cashed_out':
+        this.broadcast({ type: 'bet:cashed_out', bet });
+        this.sendBalance(event.bet.userId, event.balance);
+        return;
+      case 'refunded':
+        this.broadcast({ type: 'bet:refunded', bet });
+        this.sendBalance(event.bet.userId, event.balance);
+        return;
     }
+  }
 
-    this.broadcast({ type: 'bet:cashed_out', bet: toBetView(event.bet) });
+  private sendBalance(userId: string, balance: string): void {
     for (const [client, session] of this.sessions) {
-      if (session.user?.id === event.bet.userId) {
-        this.send(client, { type: 'balance', balance: event.balance });
+      if (session.user?.id === userId) {
+        this.send(client, { type: 'balance', balance });
       }
     }
   }

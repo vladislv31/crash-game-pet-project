@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 
 import { TypeOrmBetsStore } from '../src/betting/typeorm-bets.store';
-import { databaseOptions } from '../src/database/database-options';
+import { appDatabaseOptions, databaseOptions } from '../src/database/database-options';
+import { TypeOrmRoundsStore } from '../src/game/typeorm-rounds.store';
 import { TypeOrmUsersStore } from '../src/users/typeorm-users.store';
 import { User } from '../src/users/user';
 
@@ -13,12 +14,14 @@ describe('PostgreSQL stores', () => {
   let dataSource: DataSource;
   let users: TypeOrmUsersStore;
   let bets: TypeOrmBetsStore;
+  let rounds: TypeOrmRoundsStore;
 
   beforeAll(async () => {
     dataSource = new DataSource({ ...databaseOptions(), dropSchema: true, migrationsRun: true });
     await dataSource.initialize();
     users = new TypeOrmUsersStore(dataSource);
     bets = new TypeOrmBetsStore(dataSource);
+    rounds = new TypeOrmRoundsStore(dataSource);
   });
 
   afterAll(async () => {
@@ -31,6 +34,14 @@ describe('PostgreSQL stores', () => {
 
   function createUser(username = 'alice', balance = '5000'): Promise<User> {
     return users.findOrCreate(username, balance, randomUUID().replaceAll('-', '').padEnd(64, '0'));
+  }
+
+  /** A round whose betting is still open for a minute. */
+  async function openRound(bettingEndsAt = Date.now() + 60_000): Promise<string> {
+    const id = randomUUID();
+    await rounds.create({ id, crashPoint: 250, bettingEndsAt });
+
+    return id;
   }
 
   function placeBet(user: User, roundId: string, idempotencyKey = 'bet-1', amount = '100') {
@@ -79,7 +90,7 @@ describe('PostgreSQL stores', () => {
     it('debits the balance and writes a BET entry', async () => {
       const user = await createUser();
 
-      const result = await placeBet(user, randomUUID());
+      const result = await placeBet(user, await openRound());
 
       expect(result).toMatchObject({ status: 'placed', balance: '4900' });
       expect(await ledgerOf(user.id)).toEqual([
@@ -90,7 +101,7 @@ describe('PostgreSQL stores', () => {
 
     it('debits once for concurrent requests with the same idempotency key', async () => {
       const user = await createUser();
-      const roundId = randomUUID();
+      const roundId = await openRound();
 
       const results = await Promise.all(
         Array.from({ length: 10 }, () => placeBet(user, roundId, 'same-key')),
@@ -103,7 +114,7 @@ describe('PostgreSQL stores', () => {
 
     it('accepts one bet per round for concurrent requests with different keys', async () => {
       const user = await createUser();
-      const roundId = randomUUID();
+      const roundId = await openRound();
 
       const results = await Promise.all(
         Array.from({ length: 10 }, (_, index) => placeBet(user, roundId, `key-${index}`)),
@@ -114,10 +125,29 @@ describe('PostgreSQL stores', () => {
       expect(await balanceOf(user.id)).toBe('4900');
     });
 
+    it('does not create a bet that commits after betting ended', async () => {
+      const user = await createUser();
+      const closedRound = await openRound(Date.now() - 1);
+
+      await expect(placeBet(user, closedRound)).resolves.toEqual({ status: 'betting_closed' });
+      expect(await balanceOf(user.id)).toBe('5000');
+      expect(await ledgerOf(user.id)).toHaveLength(1);
+      await expect(bets.findUserBet(user.id, closedRound)).resolves.toBeNull();
+    });
+
+    it('does not create a bet for an unknown round', async () => {
+      const user = await createUser();
+
+      await expect(placeBet(user, randomUUID())).resolves.toEqual({ status: 'betting_closed' });
+      expect(await balanceOf(user.id)).toBe('5000');
+    });
+
     it('rejects a bet larger than the balance without debiting', async () => {
       const user = await createUser('alice', '99.99');
 
-      await expect(placeBet(user, randomUUID())).resolves.toEqual({ status: 'insufficient_funds' });
+      await expect(placeBet(user, await openRound())).resolves.toEqual({
+        status: 'insufficient_funds',
+      });
       expect(await balanceOf(user.id)).toBe('99.99');
     });
   });
@@ -125,7 +155,7 @@ describe('PostgreSQL stores', () => {
   describe('cashOut', () => {
     async function activeBet() {
       const user = await createUser();
-      const placed = await placeBet(user, randomUUID());
+      const placed = await placeBet(user, await openRound());
       if (placed.status !== 'placed') {
         throw new Error('Bet setup failed');
       }
@@ -182,19 +212,130 @@ describe('PostgreSQL stores', () => {
     });
   });
 
-  it('lists only active bets of a round', async () => {
-    const roundId = randomUUID();
-    const alice = await createUser('alice');
-    const bob = await createUser('bob');
-    await placeBet(alice, roundId);
-    const bobBet = await placeBet(bob, roundId);
-    if (bobBet.status !== 'placed') {
-      throw new Error('Bet setup failed');
+  describe('settlement queries', () => {
+    async function betInRound(username: string, crashed: boolean) {
+      const roundId = await openRound();
+      if (crashed) {
+        await rounds.markCrashed(roundId, Date.now());
+      }
+      const placed = await placeBet(await createUser(username), roundId);
+      if (placed.status !== 'placed') {
+        throw new Error('Bet setup failed');
+      }
+      return placed.bet;
     }
-    await bets.markLost(bobBet.bet.id);
 
-    const active = await bets.findActiveBets(roundId);
+    it('returns active bets of finished rounds with their crash point and crash state', async () => {
+      const crashedBet = await betInRound('alice', true);
+      const interruptedBet = await betInRound('bob', false);
 
-    expect(active.map(bet => bet.username)).toEqual(['alice']);
+      const unsettled = await bets.findUnsettledBets(randomUUID());
+
+      expect(unsettled).toHaveLength(2);
+      expect(unsettled).toEqual(
+        expect.arrayContaining([
+          { bet: crashedBet, crashPoint: 250, roundCrashed: true },
+          { bet: interruptedBet, crashPoint: 250, roundCrashed: false },
+        ]),
+      );
+    });
+
+    it('skips the current round', async () => {
+      const bet = await betInRound('alice', false);
+
+      await expect(bets.findUnsettledBets(bet.roundId)).resolves.toEqual([]);
+    });
+
+    it('skips settled bets', async () => {
+      const bet = await betInRound('alice', true);
+      await bets.markLost(bet.id);
+
+      await expect(bets.findUnsettledBets(randomUUID())).resolves.toEqual([]);
+    });
+
+    it('lists the active bets of one round', async () => {
+      const bet = await betInRound('alice', false);
+      await betInRound('bob', false);
+
+      await expect(bets.findActiveBets(bet.roundId)).resolves.toEqual([bet]);
+    });
+  });
+
+  describe('refund', () => {
+    it('voids the bet and returns its amount exactly once for concurrent refunds', async () => {
+      const user = await createUser();
+      const placed = await placeBet(user, await openRound());
+      if (placed.status !== 'placed') {
+        throw new Error('Bet setup failed');
+      }
+
+      const results = await Promise.all(
+        Array.from({ length: 10 }, () => bets.refund(placed.bet.id)),
+      );
+
+      expect(results.filter(result => result !== null)).toHaveLength(1);
+      expect(await balanceOf(user.id)).toBe('5000');
+      expect((await ledgerOf(user.id)).filter(entry => entry.type === 'REFUND')).toHaveLength(1);
+      await expect(bets.findUserBet(user.id, placed.bet.roundId)).resolves.toMatchObject({
+        status: 'VOID',
+      });
+    });
+
+    it('does not refund a bet that was already paid', async () => {
+      const user = await createUser();
+      const placed = await placeBet(user, await openRound());
+      if (placed.status !== 'placed') {
+        throw new Error('Bet setup failed');
+      }
+      await bets.cashOut({ betId: placed.bet.id, multiplier: 150, payout: '150' });
+
+      await expect(bets.refund(placed.bet.id)).resolves.toBeNull();
+      expect(await balanceOf(user.id)).toBe('5050');
+    });
+  });
+
+  describe('lookups', () => {
+    it('finds a bet by its request id with the current balance', async () => {
+      const user = await createUser();
+      const placed = await placeBet(user, await openRound(), 'request-1');
+      if (placed.status !== 'placed') {
+        throw new Error('Bet setup failed');
+      }
+
+      await expect(bets.findBetByRequest(user.id, 'request-1')).resolves.toEqual({
+        bet: placed.bet,
+        balance: '4900',
+      });
+      await expect(bets.findBetByRequest(user.id, 'unknown')).resolves.toBeNull();
+    });
+
+    it('reads the balance', async () => {
+      const user = await createUser('alice', '123.45');
+
+      await expect(bets.getBalance(user.id)).resolves.toBe('123.45');
+    });
+
+    it('finds the round with the latest betting end', async () => {
+      const older = await openRound(Date.now() + 1_000);
+      const latest = await openRound(Date.now() + 5_000);
+
+      const found = await rounds.findLatest();
+
+      expect(found?.id).toBe(latest);
+      expect(found?.id).not.toBe(older);
+      expect(found?.crashPoint).toBe(250);
+    });
+  });
+
+  it('aborts a transaction that runs longer than the app timeout', async () => {
+    const appDataSource = new DataSource({ ...appDatabaseOptions(), migrationsRun: false });
+    await appDataSource.initialize();
+    try {
+      await expect(
+        appDataSource.transaction(manager => manager.query('SELECT pg_sleep(4)')),
+      ).rejects.toThrow(/transaction timeout/);
+    } finally {
+      await appDataSource.destroy();
+    }
   });
 });

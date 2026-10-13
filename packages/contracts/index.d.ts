@@ -2,7 +2,7 @@
 // Multipliers are integers in hundredths (198 = 1.98x); money is a decimal string.
 
 export type RoundPhase = 'BETTING' | 'RUNNING' | 'CRASHED';
-export type BetStatus = 'ACTIVE' | 'CASHED_OUT' | 'LOST';
+export type BetStatus = 'ACTIVE' | 'CASHED_OUT' | 'LOST' | 'VOID';
 
 export interface LoginRequest {
   username: string;
@@ -60,6 +60,8 @@ export type ErrorCode =
   | 'already_bet'
   | 'no_active_bet'
   | 'already_settled'
+  | 'request_conflict'
+  | 'unavailable'
   | 'internal_error';
 
 export interface SnapshotMessage {
@@ -106,6 +108,12 @@ export interface BetCashedOutMessage {
   bet: BetView;
 }
 
+/** A bet of an interrupted round was voided and its amount returned (ADR-0004). */
+export interface BetRefundedMessage {
+  type: 'bet:refunded';
+  bet: BetView;
+}
+
 export interface BetAcceptedMessage {
   type: 'bet:accepted';
   requestId: string;
@@ -140,6 +148,7 @@ export type ServerMessage =
   | RoundCrashedMessage
   | BetPlacedMessage
   | BetCashedOutMessage
+  | BetRefundedMessage
   | BetAcceptedMessage
   | CashoutAcceptedMessage
   | BalanceMessage

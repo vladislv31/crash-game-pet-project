@@ -188,4 +188,184 @@ describe('GameLoop', () => {
 
     expect(events).toHaveLength(countBeforeStop);
   });
+
+  describe('preparing a round', () => {
+    function deferred() {
+      let resolve: () => void = () => undefined;
+      const promise = new Promise<void>(done => (resolve = done));
+      return { promise, resolve };
+    }
+
+    it('opens betting only after the round is prepared', async () => {
+      const prepared = deferred();
+      const prepareRound = jest.fn(() => prepared.promise);
+      const { loop, events } = createLoop([200], { prepareRound });
+
+      loop.start();
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(events).toEqual([]);
+      expect(loop.currentRound).toBeNull();
+      expect(prepareRound).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'round-1', crashPoint: 200 }),
+        BETTING_MS,
+      );
+
+      prepared.resolve();
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(events).toEqual([{ type: 'betting', roundId: 'round-1', endsAt: BETTING_MS }]);
+      expect(loop.currentRound?.id).toBe('round-1');
+    });
+
+    it('keeps the planned betting end when preparing takes time', async () => {
+      const { loop, events } = createLoop([200], {
+        prepareRound: () => new Promise<void>(done => setTimeout(done, 300)),
+      });
+
+      loop.start();
+      await jest.advanceTimersByTimeAsync(BETTING_MS);
+
+      expect(ofType(events, 'betting')).toEqual([
+        { type: 'betting', roundId: 'round-1', endsAt: BETTING_MS },
+      ]);
+      expect(ofType(events, 'started')).toEqual([
+        { type: 'started', roundId: 'round-1', startedAt: BETTING_MS },
+      ]);
+    });
+
+    it('reports the failure and tries a new round after the pause', async () => {
+      const onError = jest.fn();
+      let attempts = 0;
+      const { loop, events } = createLoop([200, 300], {
+        onError,
+        prepareRound: () =>
+          ++attempts === 1 ? Promise.reject(new Error('database down')) : Promise.resolve(),
+      });
+
+      loop.start();
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(onError).toHaveBeenCalledWith(expect.any(Error));
+      expect(events).toEqual([]);
+
+      await jest.advanceTimersByTimeAsync(PAUSE_MS);
+
+      expect(events).toEqual([
+        { type: 'betting', roundId: 'round-2', endsAt: PAUSE_MS + BETTING_MS },
+      ]);
+    });
+
+    it('plans the next round only after waiting for the previous one', async () => {
+      const { loop, events } = createLoop([200], {
+        beforeNextRound: () => new Promise<void>(done => setTimeout(done, 20_000)),
+        prepareRound: () => Promise.resolve(),
+      });
+
+      loop.start();
+      await jest.advanceTimersByTimeAsync(20_000);
+
+      expect(events).toEqual([
+        { type: 'betting', roundId: 'round-1', endsAt: 20_000 + BETTING_MS },
+      ]);
+    });
+
+    it('does not open betting when stopped while preparing', async () => {
+      const prepared = deferred();
+      const { loop, events } = createLoop([200], { prepareRound: () => prepared.promise });
+      loop.start();
+
+      loop.stop();
+      prepared.resolve();
+      await jest.advanceTimersByTimeAsync(60_000);
+
+      expect(events).toEqual([]);
+    });
+  });
+
+  it('starts the round at its planned betting end even if the timer fires late', () => {
+    let clockLead = 0;
+    const { loop, events } = createLoop([200], { now: () => Date.now() + clockLead });
+    loop.start();
+    jest.advanceTimersByTime(BETTING_MS - 1);
+
+    clockLead = 50;
+    jest.advanceTimersByTime(1);
+
+    expect(ofType(events, 'started')).toEqual([
+      { type: 'started', roundId: 'round-1', startedAt: BETTING_MS },
+    ]);
+  });
+
+  describe('resuming a stored round', () => {
+    const NOW = 100_000;
+
+    beforeEach(() => {
+      jest.setSystemTime(NOW);
+    });
+
+    it('continues betting when the stored round is still open', () => {
+      const prepareRound = jest.fn(() => Promise.resolve());
+      const { loop, events } = createLoop([], { prepareRound });
+
+      loop.start({ id: 'stored', crashPoint: 200, bettingEndsAt: NOW + 4_000 });
+
+      expect(events).toEqual([{ type: 'betting', roundId: 'stored', endsAt: NOW + 4_000 }]);
+      expect(prepareRound).not.toHaveBeenCalled();
+
+      jest.advanceTimersByTime(4_000);
+
+      expect(ofType(events, 'started')).toEqual([
+        { type: 'started', roundId: 'stored', startedAt: NOW + 4_000 },
+      ]);
+    });
+
+    it('continues the flight from where it is when the stored round is running', () => {
+      const { loop, events } = createLoop([]);
+
+      loop.start({ id: 'stored', crashPoint: 500, bettingEndsAt: NOW - 3_000 });
+
+      expect(events).toEqual([{ type: 'started', roundId: 'stored', startedAt: NOW - 3_000 }]);
+      expect(loop.currentRound?.multiplier(NOW)).toBe(multiplierAt(3_000));
+
+      jest.advanceTimersByTime(TICK_MS);
+      expect(events.at(-1)).toEqual({
+        type: 'tick',
+        roundId: 'stored',
+        multiplier: multiplierAt(3_000 + TICK_MS),
+      });
+    });
+
+    it('crashes the continued round at its original crash time', () => {
+      const { loop, events } = createLoop([300]);
+      loop.start({ id: 'stored', crashPoint: 500, bettingEndsAt: NOW - 3_000 });
+
+      jest.advanceTimersByTime(crashTimeMs(500) - 3_000);
+
+      expect(ofType(events, 'crashed')).toEqual([
+        {
+          type: 'crashed',
+          roundId: 'stored',
+          crashPoint: 500,
+          crashedAt: NOW - 3_000 + crashTimeMs(500),
+        },
+      ]);
+    });
+
+    it('opens a new round when the stored round should already have crashed', () => {
+      const { loop, events } = createLoop([300]);
+
+      loop.start({ id: 'stored', crashPoint: 200, bettingEndsAt: NOW - 60_000 });
+
+      expect(events).toEqual([{ type: 'betting', roundId: 'round-1', endsAt: NOW + BETTING_MS }]);
+    });
+
+    it('opens a new round when the stored round ends exactly now', () => {
+      const { loop, events } = createLoop([300]);
+
+      loop.start({ id: 'stored', crashPoint: 200, bettingEndsAt: NOW - crashTimeMs(200) });
+
+      expect(events[0]).toMatchObject({ type: 'betting', roundId: 'round-1' });
+    });
+  });
 });

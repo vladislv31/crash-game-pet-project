@@ -25,13 +25,30 @@
   - `packages/contracts`: type-only message contract
   - game-server: users/auth, betting (bets, cashouts, auto-cashout, max win, settlement), PostgreSQL stores, WebSocket gateway, round persistence
   - `apps/web`: React + Vite client
-- Not done yet: the initial migration (needs a running PostgreSQL), integration tests not run yet
+- Review fixes and fault tolerance (by Claude, on request), awaiting owner review; integration tests for them not run yet:
+  - round stored before betting opens; deterministic timeline; a restart continues the last round or voids it
+  - settlement sweep: crashed rounds settled, interrupted rounds refunded (`VOID` + `REFUND`)
+  - app transaction timeouts; late bets are not created
+  - idempotent bet and cashout retries; client resends the unanswered request after reconnecting
+  - graceful shutdown: drain requests and writes before the database closes
 
 ## Next
 
-- Owner: `docker compose up -d` → generate the initial migration (twice, second must be empty) → `npm run test:e2e -w game-server` → run server + web
+- Owner: `npm run test:e2e -w game-server` (initial migration is generated and applied) → review → run server + web
 - Phase 3: observability
+
+## Backlog (before experiments)
+
+- WebSocket hardening: `maxPayload`, per-socket message rate limit, ignore messages before auth, ping/pong to drop dead connections
+- Rate limit `POST /auth/login` (every new username creates a user)
+- Do not log raw errors that carry query parameters (token in `findByToken` failures)
+- Partial index on `bets` for `status = 'ACTIVE'` (settlement sweep scans the table)
+- Reconciliation check: `users.balance` equals the sum of `ledger_entries` per user
+- End-to-end WebSocket test through the real app (login → bet → cashout)
+- Structured JSON wide-event logs per request (global CLAUDE.md), with Phase 3
+- CI: lint, unit tests, integration tests with PostgreSQL
 
 ## Open questions
 
 - Max win per bet: 100 000 was chosen by Claude (ADR-0004), confirm or change
+- Deploys: on SIGTERM, finish the running round and stop in the pause, so a deploy never voids a round? Needs a grace period of about 100 s

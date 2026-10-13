@@ -20,3 +20,24 @@ export function databaseOptions(env: NodeJS.ProcessEnv = process.env): PostgresC
     migrations: [join(__dirname, 'migrations', '*.{ts,js}')],
   };
 }
+
+const POOL_WAIT_MS = 1_000;
+const TRANSACTION_TIMEOUT_MS = 3_000;
+
+/**
+ * The app's connection: a request waits at most 1 s for a pooled connection and a transaction runs
+ * at most 3 s, together below the 5 s pause. A cashout received before the crash therefore commits
+ * or fails before the settlement sweep can mark its bet as lost (ADR-0004).
+ */
+export function appDatabaseOptions(
+  env: NodeJS.ProcessEnv = process.env,
+): PostgresConnectionOptions {
+  return {
+    ...databaseOptions(env),
+    migrationsRun: true,
+    extra: {
+      connectionTimeoutMillis: POOL_WAIT_MS,
+      options: `-c transaction_timeout=${TRANSACTION_TIMEOUT_MS}`,
+    },
+  };
+}

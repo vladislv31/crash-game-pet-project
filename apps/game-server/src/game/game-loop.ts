@@ -1,3 +1,4 @@
+import { crashTimeMs } from './multiplier';
 import { Round } from './round';
 
 export type GameEvent =
@@ -6,10 +7,23 @@ export type GameEvent =
   | { type: 'tick'; roundId: string; multiplier: number }
   | { type: 'crashed'; roundId: string; crashPoint: number; crashedAt: number };
 
+/** Everything that defines a round's timeline: it starts at `bettingEndsAt` and crashes `crashTimeMs(crashPoint)` later. */
+export interface RoundPlan {
+  id: string;
+  crashPoint: number;
+  bettingEndsAt: number;
+}
+
 export interface GameLoopOptions {
   generateCrashPoint: () => number;
   nextRoundId: () => string;
   onEvent: (event: GameEvent) => void;
+  /** Awaited before the next round is planned, so a slow wait cannot eat into its betting phase. */
+  beforeNextRound?: () => Promise<void>;
+  /** Runs before betting opens (e.g. persisting the round); betting waits for it and keeps its planned end. */
+  prepareRound?: (round: Round, bettingEndsAt: number) => Promise<void>;
+  /** A failed `prepareRound`; the loop tries a new round after the pause. */
+  onError?: (error: unknown) => void;
   now?: () => number;
   bettingMs?: number;
   tickMs?: number;
@@ -43,12 +57,16 @@ export class GameLoop {
     return this.round;
   }
 
-  start(): void {
+  /** Continues `resume` (e.g. the last stored round after a restart) if its timeline is not over yet. */
+  start(resume: RoundPlan | null = null): void {
     if (this.running) {
       throw new Error('Game loop is already running');
     }
 
     this.running = true;
+    if (resume && this.resume(resume)) {
+      return;
+    }
     this.openBetting();
   }
 
@@ -58,19 +76,78 @@ export class GameLoop {
   }
 
   private openBetting(): void {
-    const round = new Round(this.options.nextRoundId(), this.options.generateCrashPoint());
-    this.round = round;
+    const { beforeNextRound } = this.options;
+    if (!beforeNextRound) {
+      this.planRound();
+      return;
+    }
 
-    this.options.onEvent({
-      type: 'betting',
-      roundId: round.id,
-      endsAt: this.now() + this.bettingMs,
-    });
-    this.phaseTimer = setTimeout(() => this.startRound(round), this.bettingMs);
+    void beforeNextRound().then(
+      () => {
+        if (this.running) {
+          this.planRound();
+        }
+      },
+      (error: unknown) => this.retryLater(error),
+    );
   }
 
-  private startRound(round: Round): void {
-    const startedAt = this.now();
+  private planRound(): void {
+    const round = new Round(this.options.nextRoundId(), this.options.generateCrashPoint());
+    const bettingEndsAt = this.now() + this.bettingMs;
+
+    if (!this.options.prepareRound) {
+      this.publishBetting(round, bettingEndsAt);
+      return;
+    }
+
+    void this.options.prepareRound(round, bettingEndsAt).then(
+      () => {
+        if (this.running) {
+          this.publishBetting(round, bettingEndsAt);
+        }
+      },
+      (error: unknown) => this.retryLater(error),
+    );
+  }
+
+  private retryLater(error: unknown): void {
+    this.options.onError?.(error);
+    if (this.running) {
+      this.phaseTimer = setTimeout(() => this.openBetting(), this.pauseMs);
+    }
+  }
+
+  private resume(plan: RoundPlan): boolean {
+    const now = this.now();
+    const round = new Round(plan.id, plan.crashPoint);
+
+    if (now < plan.bettingEndsAt) {
+      this.publishBetting(round, plan.bettingEndsAt);
+      return true;
+    }
+
+    if (now < plan.bettingEndsAt + crashTimeMs(plan.crashPoint)) {
+      this.round = round;
+      this.startRound(round, plan.bettingEndsAt);
+      return true;
+    }
+
+    return false;
+  }
+
+  private publishBetting(round: Round, bettingEndsAt: number): void {
+    this.round = round;
+
+    this.options.onEvent({ type: 'betting', roundId: round.id, endsAt: bettingEndsAt });
+    this.phaseTimer = setTimeout(
+      () => this.startRound(round, bettingEndsAt),
+      Math.max(0, bettingEndsAt - this.now()),
+    );
+  }
+
+  /** Starts at the planned time, not when the timer fired, so the timeline matches the stored plan. */
+  private startRound(round: Round, startedAt: number): void {
     round.start(startedAt);
 
     this.options.onEvent({ type: 'started', roundId: round.id, startedAt });

@@ -78,6 +78,10 @@ export function BetPanel({ round, myBet, send }: BetPanelProps) {
 }
 
 function MyBet({ bet }: { bet: BetView }) {
+  if (bet.status === 'VOID') {
+    return <p>Round interrupted: your bet of {bet.amount} was refunded</p>;
+  }
+
   if (bet.status === 'CASHED_OUT' && bet.cashoutMultiplier !== null) {
     return (
       <p className="win">

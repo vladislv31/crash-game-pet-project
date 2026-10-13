@@ -4,7 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AppController } from './app.controller';
 import { BettingModule } from './betting/betting.module';
-import { databaseOptions } from './database/database-options';
+import { appDatabaseOptions } from './database/database-options';
 import { GameModule } from './game/game.module';
 import { GatewayModule } from './gateway/gateway.module';
 import { UsersModule } from './users/users.module';
@@ -13,9 +13,7 @@ import { UsersModule } from './users/users.module';
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     // Factory runs after ConfigModule has loaded .env into process.env.
-    TypeOrmModule.forRootAsync({
-      useFactory: () => ({ ...databaseOptions(), migrationsRun: true }),
-    }),
+    TypeOrmModule.forRootAsync({ useFactory: () => appDatabaseOptions() }),
     GameModule,
     UsersModule,
     BettingModule,

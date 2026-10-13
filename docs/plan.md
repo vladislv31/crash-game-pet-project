@@ -33,9 +33,11 @@
 
 ## Phase 5 — Horizontal scaling
 
-- Multiple game-server instances behind a load balancer
-- Redis pub/sub for broadcast; single round leader (lock/election)
-- Round recovery after instance/leader death
+- Multiple game-server instances behind a load balancer; rolling deploys (clients reconnect on close code 1012)
+- Redis pub/sub for broadcast
+- Single round leader: a lease in PostgreSQL with a fencing token (epoch), checked by every round write, so a stale leader cannot create or change rounds; money needs no lock (conditional updates already guarantee exactly-once)
+- Leader handover continues the current round from the database (restart recovery for one instance is done in Phase 2)
+- Revisit per-instance in-memory auto-cashout tracking
 
 ## Phase 6 — Experiments (write-up per experiment in `docs/experiments/`)
 

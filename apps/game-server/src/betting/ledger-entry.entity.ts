@@ -10,7 +10,7 @@ import {
 
 import { UserEntity } from '../users/user.entity';
 
-export type LedgerEntryType = 'INITIAL' | 'BET' | 'WIN';
+export type LedgerEntryType = 'INITIAL' | 'BET' | 'WIN' | 'REFUND';
 
 // Append-only money history (ADR-0004): never updated or deleted, so there is no soft-delete column.
 @Entity('ledger_entries')

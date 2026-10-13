@@ -13,7 +13,19 @@ export interface PlaceBetInput {
 
 export type PlaceBetResult =
   | { status: 'placed' | 'duplicate'; bet: Bet; balance: string }
-  | { status: 'insufficient_funds' | 'already_bet' };
+  | { status: 'insufficient_funds' | 'already_bet' | 'betting_closed' };
+
+export interface UnsettledBet {
+  bet: Bet;
+  crashPoint: number;
+  /** False when the round was interrupted (e.g. a restart) before its crash was recorded. */
+  roundCrashed: boolean;
+}
+
+export interface BetWithBalance {
+  bet: Bet;
+  balance: string;
+}
 
 export interface CashOutInput {
   betId: string;
@@ -23,10 +35,17 @@ export interface CashOutInput {
 
 /** Money-moving operations. Each one is atomic (ADR-0004). */
 export interface BetsStore {
+  /** Creates the bet only if it commits before its round's betting ends (ADR-0004). */
   placeBet(input: PlaceBetInput): Promise<PlaceBetResult>;
   /** Credits the payout only if the bet is still ACTIVE; returns null otherwise. */
-  cashOut(input: CashOutInput): Promise<{ bet: Bet; balance: string } | null>;
+  cashOut(input: CashOutInput): Promise<BetWithBalance | null>;
   markLost(betId: string): Promise<void>;
+  /** Voids the bet and returns its amount, only if it is still ACTIVE; returns null otherwise. */
+  refund(betId: string): Promise<BetWithBalance | null>;
+  /** ACTIVE bets of every round except `currentRoundId`, with what is needed to settle them. */
+  findUnsettledBets(currentRoundId: string): Promise<UnsettledBet[]>;
   findActiveBets(roundId: string): Promise<Bet[]>;
   findUserBet(userId: string, roundId: string): Promise<Bet | null>;
+  findBetByRequest(userId: string, idempotencyKey: string): Promise<BetWithBalance | null>;
+  getBalance(userId: string): Promise<string>;
 }

@@ -29,6 +29,12 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
       generateCrashPoint,
       nextRoundId: randomUUID,
       onEvent: event => this.handleEvent(event),
+      // The previous round's crash must be on record first: settlement treats a round without it as interrupted.
+      beforeNextRound: async () => {
+        await Promise.allSettled(this.pendingWrites);
+      },
+      prepareRound: (round, bettingEndsAt) => this.storeRound(round, bettingEndsAt),
+      onError: error => this.logger.error({ message: 'Failed to store round', error }),
     });
   }
 
@@ -55,8 +61,9 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
     this.listeners.push(listener);
   }
 
-  onApplicationBootstrap(): void {
-    this.loop.start();
+  /** Continues the last stored round if its timeline is not over, so a restart does not abandon it. */
+  async onApplicationBootstrap(): Promise<void> {
+    this.loop.start(await this.rounds.findLatest());
   }
 
   /** Runs before TypeORM closes its connection in onApplicationShutdown, so round writes are not cut off. */
@@ -81,18 +88,13 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
 
   private record(event: GameEvent): void {
     switch (event.type) {
-      case 'betting': {
+      case 'betting':
         this.bettingEndsAt = event.endsAt;
         this.startedAt = null;
-        const crashPoint = this.loop.currentRound?.crashPoint;
-        if (crashPoint !== undefined) {
-          this.persist(
-            this.rounds.create({ id: event.roundId, crashPoint, bettingEndsAt: event.endsAt }),
-          );
-        }
         return;
-      }
       case 'started':
+        // A round starts exactly when its betting ends, also when it is continued after a restart.
+        this.bettingEndsAt = event.startedAt;
         this.startedAt = event.startedAt;
         this.persist(this.rounds.markStarted(event.roundId, event.startedAt));
         return;
@@ -104,10 +106,23 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
     }
   }
 
+  /** The crash point is stored before betting opens, so every bet's round can be settled later (ADR-0004). */
+  private async storeRound(round: Round, bettingEndsAt: number): Promise<void> {
+    const write = this.rounds.create({ id: round.id, crashPoint: round.crashPoint, bettingEndsAt });
+    this.track(write);
+    await write;
+  }
+
   private persist(write: Promise<void>): void {
-    const tracked = write
-      .catch((error: unknown) => this.logger.error({ message: 'Failed to store round', error }))
-      .finally(() => this.pendingWrites.delete(tracked));
-    this.pendingWrites.add(tracked);
+    this.track(
+      write.catch((error: unknown) =>
+        this.logger.error({ message: 'Failed to store round', error }),
+      ),
+    );
+  }
+
+  private track(write: Promise<void>): void {
+    const settled = write.catch(() => undefined).finally(() => this.pendingWrites.delete(settled));
+    this.pendingWrites.add(settled);
   }
 }

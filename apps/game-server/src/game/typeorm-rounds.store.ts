@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 
+import { RoundPlan } from './game-loop';
 import { RoundEntity } from './round.entity';
 import { RoundsStore } from './rounds.store';
 
@@ -28,5 +29,19 @@ export class TypeOrmRoundsStore implements RoundsStore {
     await this.dataSource
       .getRepository(RoundEntity)
       .update({ id }, { crashedAt: new Date(crashedAt) });
+  }
+
+  async findLatest(): Promise<RoundPlan | null> {
+    const [latest] = await this.dataSource
+      .getRepository(RoundEntity)
+      .find({ order: { bettingEndsAt: 'DESC' }, take: 1 });
+
+    return latest
+      ? {
+          id: latest.id,
+          crashPoint: latest.crashPoint,
+          bettingEndsAt: latest.bettingEndsAt.getTime(),
+        }
+      : null;
   }
 }

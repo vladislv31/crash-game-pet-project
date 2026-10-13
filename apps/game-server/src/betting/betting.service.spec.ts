@@ -1,3 +1,5 @@
+import { Logger } from '@nestjs/common';
+
 import { crashTimeMs } from '../game/multiplier';
 import { Round } from '../game/round';
 import { InMemoryStore } from '../testing/in-memory-store';
@@ -13,11 +15,14 @@ function at(multiplier: number): number {
 }
 
 async function setup(crashPoint = 500) {
-  const store = new InMemoryStore();
+  // The database clock; betting for round-1 ends at STARTED_AT.
+  let databaseTime = STARTED_AT - 1_000;
+  const store = new InMemoryStore(() => databaseTime);
   const game: { currentRound: Round | null; subscribe: GameSource['subscribe'] } = {
     currentRound: new Round('round-1', crashPoint),
     subscribe: () => undefined,
   };
+  await store.create({ id: 'round-1', crashPoint, bettingEndsAt: STARTED_AT });
   const service = new BettingService(store, game);
   const events: BettingEvent[] = [];
   service.subscribe(event => events.push(event));
@@ -39,7 +44,11 @@ async function setup(crashPoint = 500) {
     return service.placeBet(player, { requestId, amount, autoCashout });
   }
 
-  return { store, game, service, events, user, round, placeBet };
+  function setDatabaseTime(time: number) {
+    databaseTime = time;
+  }
+
+  return { store, game, service, events, user, round, placeBet, setDatabaseTime };
 }
 
 function expectBettingError(promise: Promise<unknown>, code: string) {
@@ -94,6 +103,32 @@ describe('BettingService', () => {
       await expectBettingError(placeBet(), 'betting_closed');
     });
 
+    it('does not create a bet whose write lands after betting ended', async () => {
+      const { placeBet, store, user, events, setDatabaseTime } = await setup();
+      setDatabaseTime(STARTED_AT);
+
+      await expectBettingError(placeBet(), 'betting_closed');
+      expect(store.users.get(user.id)?.balance).toBe('5000');
+      expect(store.bets.size).toBe(0);
+      expect(store.ledger.filter(entry => entry.type === 'BET')).toEqual([]);
+      expect(events).toEqual([]);
+    });
+
+    it('does not create a late bet with auto-cashout either', async () => {
+      const { placeBet, store, setDatabaseTime } = await setup();
+      setDatabaseTime(STARTED_AT + 500);
+
+      await expectBettingError(placeBet('100', 150), 'betting_closed');
+      expect(store.bets.size).toBe(0);
+    });
+
+    it('accepts a bet written in the last millisecond of betting', async () => {
+      const { placeBet, setDatabaseTime } = await setup();
+      setDatabaseTime(STARTED_AT - 1);
+
+      await expect(placeBet()).resolves.toMatchObject({ balance: '4900' });
+    });
+
     it('rejects a bet larger than the balance', async () => {
       const { placeBet, store, user } = await setup();
       store.users.get(user.id)!.balance = '99.99';
@@ -118,6 +153,37 @@ describe('BettingService', () => {
       expect(retry.bet).toEqual(first.bet);
       expect(store.users.get(user.id)?.balance).toBe('4900');
       expect(events).toHaveLength(1);
+    });
+
+    it('returns the original bet for a request retried after betting closed', async () => {
+      const { placeBet, round } = await setup();
+      const first = await placeBet('100', undefined, 'bet-1');
+      round().start(STARTED_AT);
+
+      await expect(placeBet('100', undefined, 'bet-1')).resolves.toEqual(first);
+    });
+
+    it('rejects a reused request id with a different bet', async () => {
+      const { placeBet, store, user } = await setup();
+      await placeBet('100', undefined, 'bet-1');
+
+      await expectBettingError(placeBet('200', undefined, 'bet-1'), 'request_conflict');
+      await expectBettingError(placeBet('100', 150, 'bet-1'), 'request_conflict');
+      expect(store.users.get(user.id)?.balance).toBe('4900');
+    });
+
+    it('decides whether betting is open when the request arrives, not after looking up retries', async () => {
+      const { placeBet, round, store } = await setup();
+      let finishLookup = () => undefined as void;
+      jest
+        .spyOn(store, 'findBetByRequest')
+        .mockImplementationOnce(() => new Promise(resolve => (finishLookup = () => resolve(null))));
+
+      const pending = placeBet('100');
+      round().start(STARTED_AT);
+      finishLookup();
+
+      await expect(pending).resolves.toMatchObject({ balance: '4900' });
     });
 
     it('debits once when the same request arrives concurrently', async () => {
@@ -187,24 +253,39 @@ describe('BettingService', () => {
     });
 
     it('pays exactly once when the same cashout arrives concurrently', async () => {
-      const { placeBet, service, round, user, store } = await setup(500);
+      const { placeBet, service, round, user, store, events } = await setup(500);
       await placeBet('100');
       round().start(STARTED_AT);
 
-      const results = await Promise.allSettled(
+      const results = await Promise.all(
         Array.from({ length: 5 }, () => service.cashOut(user, at(150))),
       );
 
-      expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
-      expect(
-        results.filter(
-          result =>
-            result.status === 'rejected' &&
-            (result.reason as BettingError).code === 'already_settled',
-        ),
-      ).toHaveLength(4);
+      expect(new Set(results.map(result => result.bet.payout))).toEqual(new Set(['150']));
       expect(store.ledger.filter(entry => entry.type === 'WIN')).toHaveLength(1);
       expect(store.users.get(user.id)?.balance).toBe('5050');
+      expect(events.filter(event => event.type === 'cashed_out')).toHaveLength(1);
+    });
+
+    it('returns the original result when a cashout is repeated', async () => {
+      const { placeBet, service, round, user, store } = await setup(500);
+      await placeBet('100');
+      round().start(STARTED_AT);
+      const first = await service.cashOut(user, at(150));
+
+      const repeated = await service.cashOut(user, at(180));
+
+      expect(repeated).toEqual(first);
+      expect(store.ledger.filter(entry => entry.type === 'WIN')).toHaveLength(1);
+    });
+
+    it('rejects a cashout of a bet that was already lost', async () => {
+      const { placeBet, service, round, user, store } = await setup(500);
+      const { bet } = await placeBet('100');
+      round().start(STARTED_AT);
+      await store.markLost(bet.id);
+
+      await expectBettingError(service.cashOut(user, at(150)), 'already_settled');
     });
 
     it('pays the auto-cashout target when a manual cashout arrives after it', async () => {
@@ -314,23 +395,92 @@ describe('BettingService', () => {
     });
   });
 
-  describe('settling a crashed round', () => {
-    async function crashAndOpenNextRound(service: BettingService, crashPoint: number) {
+  describe('after a restart', () => {
+    it('pays auto-cashouts of a continued round from the bets in the store', async () => {
+      const { store, user, game } = await setup(500);
+      const placed = await store.placeBet({
+        userId: user.id,
+        username: user.username,
+        roundId: 'round-1',
+        amount: '100',
+        autoCashout: 150,
+        idempotencyKey: 'before-restart',
+      });
+      const restarted = new BettingService(store, game);
+
+      await restarted.handleGameEvent({
+        type: 'started',
+        roundId: 'round-1',
+        startedAt: STARTED_AT,
+      });
+      await restarted.handleGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 151 });
+
+      expect(placed.status).toBe('placed');
+      expect(store.ledger.filter(entry => entry.type === 'WIN')).toHaveLength(1);
+    });
+  });
+
+  describe('shutdown', () => {
+    it('waits for bets that are still being written', async () => {
+      const { placeBet, service, store } = await setup();
+      let finishWrite = () => undefined as void;
+      const realPlaceBet = store.placeBet.bind(store);
+      jest
+        .spyOn(store, 'placeBet')
+        .mockImplementationOnce(
+          input => new Promise(resolve => (finishWrite = () => resolve(realPlaceBet(input)))),
+        );
+      const pending = placeBet();
+
+      let drained = false;
+      const draining = service.drain().then(() => (drained = true));
+      await Promise.resolve();
+      expect(drained).toBe(false);
+
+      finishWrite();
+      await draining;
+      await expect(pending).resolves.toMatchObject({ balance: '4900' });
+    });
+  });
+
+  describe('settling crashed rounds', () => {
+    async function crash(store: InMemoryStore, service: BettingService, crashPoint: number) {
+      await store.markCrashed('round-1', at(crashPoint));
       await service.handleGameEvent({
         type: 'crashed',
         roundId: 'round-1',
         crashPoint,
         crashedAt: at(crashPoint),
       });
-      await service.handleGameEvent({ type: 'betting', roundId: 'round-2', endsAt: 0 });
+    }
+
+    function openRound(service: BettingService, roundId: string) {
+      return service.handleGameEvent({ type: 'betting', roundId, endsAt: 0 });
+    }
+
+    /** A bet that reached the database without going through the service, e.g. a late commit. */
+    async function writeBet(store: InMemoryStore, user: User, autoCashout: number | null = null) {
+      const placed = await store.placeBet({
+        userId: user.id,
+        username: user.username,
+        roundId: 'round-1',
+        amount: '100',
+        autoCashout,
+        idempotencyKey: `direct-${user.id}`,
+      });
+      if (placed.status !== 'placed') {
+        throw new Error('Bet setup failed');
+      }
+      return placed.bet;
     }
 
     it('marks bets that did not cash out as lost when the next round opens', async () => {
       const { placeBet, service, round, store } = await setup(200);
       const { bet } = await placeBet('100');
       round().start(STARTED_AT);
+      await crash(store, service, 200);
 
-      await crashAndOpenNextRound(service, 200);
+      await openRound(service, 'round-2');
 
       expect(store.bets.get(bet.id)?.status).toBe('LOST');
     });
@@ -340,33 +490,19 @@ describe('BettingService', () => {
       const { bet } = await placeBet('100');
       round().start(STARTED_AT);
 
-      await service.handleGameEvent({
-        type: 'crashed',
-        roundId: 'round-1',
-        crashPoint: 200,
-        crashedAt: at(200),
-      });
+      await crash(store, service, 200);
 
       expect(store.bets.get(bet.id)?.status).toBe('ACTIVE');
     });
 
     it('pays an untracked bet whose target was below the crash point', async () => {
       const { service, store, user } = await setup(200);
-      const placed = await store.placeBet({
-        userId: user.id,
-        username: user.username,
-        roundId: 'round-1',
-        amount: '100',
-        autoCashout: 150,
-        idempotencyKey: 'written-by-another-path',
-      });
-      if (placed.status !== 'placed') {
-        throw new Error('Bet setup failed');
-      }
+      const bet = await writeBet(store, user, 150);
+      await crash(store, service, 200);
 
-      await crashAndOpenNextRound(service, 200);
+      await openRound(service, 'round-2');
 
-      expect(store.bets.get(placed.bet.id)).toMatchObject({
+      expect(store.bets.get(bet.id)).toMatchObject({
         status: 'CASHED_OUT',
         cashoutMultiplier: 150,
       });
@@ -377,13 +513,98 @@ describe('BettingService', () => {
       const { bet } = await placeBet('100');
       round().start(STARTED_AT);
       await service.cashOut(user, at(150));
+      await crash(store, service, 200);
 
-      await crashAndOpenNextRound(service, 200);
+      await openRound(service, 'round-2');
 
       expect(store.bets.get(bet.id)).toMatchObject({
         status: 'CASHED_OUT',
         cashoutMultiplier: 150,
       });
+    });
+
+    it('settles bets of every crashed round, not only the last one', async () => {
+      const { service, store, user } = await setup(200);
+      await crash(store, service, 200);
+      await openRound(service, 'round-2');
+      const lateBet = await writeBet(store, user);
+
+      await openRound(service, 'round-3');
+
+      expect(store.bets.get(lateBet.id)?.status).toBe('LOST');
+    });
+
+    it('settles bets left over from before a restart', async () => {
+      const { store, user, game } = await setup(200);
+      const bet = await writeBet(store, user, 150);
+      await store.markCrashed('round-1', at(200));
+      const restarted = new BettingService(store, game);
+
+      await openRound(restarted, 'round-2');
+
+      expect(store.bets.get(bet.id)).toMatchObject({
+        status: 'CASHED_OUT',
+        cashoutMultiplier: 150,
+      });
+    });
+
+    it('refunds bets of a round that was interrupted before it crashed', async () => {
+      const { store, user, service, events } = await setup(200);
+      const bet = await writeBet(store, user, 150);
+
+      await openRound(service, 'round-2');
+
+      expect(store.bets.get(bet.id)?.status).toBe('VOID');
+      expect(store.users.get(user.id)?.balance).toBe('5000');
+      expect(store.ledger.filter(entry => entry.type === 'REFUND')).toEqual([
+        { userId: user.id, amount: '100', type: 'REFUND' },
+      ]);
+      expect(events).toContainEqual({
+        type: 'refunded',
+        bet: expect.objectContaining({ id: bet.id, status: 'VOID' }),
+        balance: '5000',
+      });
+    });
+
+    it('does not settle bets of the round that is opening', async () => {
+      const { store, user, service } = await setup(200);
+      const bet = await writeBet(store, user);
+
+      await openRound(service, 'round-1');
+
+      expect(store.bets.get(bet.id)?.status).toBe('ACTIVE');
+    });
+
+    it('refunds an interrupted bet only once', async () => {
+      const { store, user, service } = await setup(200);
+      await writeBet(store, user);
+
+      await Promise.all([openRound(service, 'round-2'), openRound(service, 'round-2')]);
+
+      expect(store.ledger.filter(entry => entry.type === 'REFUND')).toHaveLength(1);
+      expect(store.users.get(user.id)?.balance).toBe('5000');
+    });
+
+    it('keeps settling the other bets when one of them fails, and retries it later', async () => {
+      const errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const { store, user, service } = await setup(200);
+      const bob = await store.findOrCreate('bob', '5000', 'token-bob');
+      const aliceBet = await writeBet(store, user);
+      const bobBet = await writeBet(store, bob);
+      await crash(store, service, 200);
+      jest.spyOn(store, 'markLost').mockRejectedValueOnce(new Error('database down'));
+
+      await openRound(service, 'round-2');
+
+      const statuses = [store.bets.get(aliceBet.id)?.status, store.bets.get(bobBet.id)?.status];
+      expect(statuses.sort()).toEqual(['ACTIVE', 'LOST']);
+      expect(errorSpy).toHaveBeenCalled();
+
+      await openRound(service, 'round-3');
+
+      expect(store.bets.get(aliceBet.id)?.status).toBe('LOST');
+      expect(store.bets.get(bobBet.id)?.status).toBe('LOST');
+      errorSpy.mockRestore();
     });
   });
 });

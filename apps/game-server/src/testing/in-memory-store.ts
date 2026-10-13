@@ -3,7 +3,15 @@ import { randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
 
 import { Bet } from '../betting/bet';
-import { BetsStore, CashOutInput, PlaceBetInput, PlaceBetResult } from '../betting/bets.store';
+import {
+  BetsStore,
+  BetWithBalance,
+  CashOutInput,
+  PlaceBetInput,
+  PlaceBetResult,
+  UnsettledBet,
+} from '../betting/bets.store';
+import { RoundPlan } from '../game/game-loop';
 import { RoundsStore } from '../game/rounds.store';
 import { User } from '../users/user';
 import { UsersStore } from '../users/users.store';
@@ -24,8 +32,15 @@ export class InMemoryStore implements UsersStore, BetsStore, RoundsStore {
   readonly users = new Map<string, User>();
   readonly bets = new Map<string, Bet>();
   readonly rounds = new Map<string, StoredRound>();
-  readonly ledger: { userId: string; amount: string; type: 'INITIAL' | 'BET' | 'WIN' }[] = [];
+  readonly ledger: {
+    userId: string;
+    amount: string;
+    type: 'INITIAL' | 'BET' | 'WIN' | 'REFUND';
+  }[] = [];
   private readonly idempotencyKeys = new Map<string, string>();
+
+  /** `now` plays the database clock that decides whether a bet commits before betting ends. */
+  constructor(private readonly now: () => number = Date.now) {}
 
   findOrCreate(username: string, initialBalance: string, token: string): Promise<User> {
     const existing = [...this.users.values()].find(user => user.username === username);
@@ -68,6 +83,11 @@ export class InMemoryStore implements UsersStore, BetsStore, RoundsStore {
       return Promise.resolve({ status: 'insufficient_funds' });
     }
 
+    const round = this.rounds.get(input.roundId);
+    if (!round || this.now() >= round.bettingEndsAt) {
+      return Promise.resolve({ status: 'betting_closed' });
+    }
+
     user.balance = new Decimal(user.balance).minus(input.amount).toFixed();
     const bet: Bet = {
       id: randomUUID(),
@@ -87,7 +107,7 @@ export class InMemoryStore implements UsersStore, BetsStore, RoundsStore {
     return Promise.resolve({ status: 'placed', bet: { ...bet }, balance: user.balance });
   }
 
-  cashOut(input: CashOutInput): Promise<{ bet: Bet; balance: string } | null> {
+  cashOut(input: CashOutInput): Promise<BetWithBalance | null> {
     const bet = this.bets.get(input.betId);
     if (!bet || bet.status !== 'ACTIVE') {
       return Promise.resolve(null);
@@ -112,12 +132,54 @@ export class InMemoryStore implements UsersStore, BetsStore, RoundsStore {
     return Promise.resolve();
   }
 
+  refund(betId: string): Promise<BetWithBalance | null> {
+    const bet = this.bets.get(betId);
+    if (!bet || bet.status !== 'ACTIVE') {
+      return Promise.resolve(null);
+    }
+
+    bet.status = 'VOID';
+    const user = this.mustGetUser(bet.userId);
+    user.balance = new Decimal(user.balance).plus(bet.amount).toFixed();
+    this.ledger.push({ userId: user.id, amount: bet.amount, type: 'REFUND' });
+
+    return Promise.resolve({ bet: { ...bet }, balance: user.balance });
+  }
+
+  findUnsettledBets(currentRoundId: string): Promise<UnsettledBet[]> {
+    const unsettled: UnsettledBet[] = [];
+    for (const bet of this.bets.values()) {
+      const round = this.rounds.get(bet.roundId);
+      if (bet.status === 'ACTIVE' && round && round.id !== currentRoundId) {
+        unsettled.push({
+          bet: { ...bet },
+          crashPoint: round.crashPoint,
+          roundCrashed: round.crashedAt !== null,
+        });
+      }
+    }
+
+    return Promise.resolve(unsettled);
+  }
+
   findActiveBets(roundId: string): Promise<Bet[]> {
     return Promise.resolve(
       [...this.bets.values()]
         .filter(bet => bet.roundId === roundId && bet.status === 'ACTIVE')
         .map(bet => ({ ...bet })),
     );
+  }
+
+  findBetByRequest(userId: string, idempotencyKey: string): Promise<BetWithBalance | null> {
+    const betId = this.idempotencyKeys.get(`${userId}:${idempotencyKey}`);
+
+    return Promise.resolve(
+      betId ? { bet: this.copyBet(betId), balance: this.mustGetUser(userId).balance } : null,
+    );
+  }
+
+  getBalance(userId: string): Promise<string> {
+    return Promise.resolve(this.mustGetUser(userId).balance);
   }
 
   findUserBet(userId: string, roundId: string): Promise<Bet | null> {
@@ -150,6 +212,16 @@ export class InMemoryStore implements UsersStore, BetsStore, RoundsStore {
     }
 
     return Promise.resolve();
+  }
+
+  findLatest(): Promise<RoundPlan | null> {
+    const latest = [...this.rounds.values()].sort((a, b) => b.bettingEndsAt - a.bettingEndsAt)[0];
+
+    return Promise.resolve(
+      latest
+        ? { id: latest.id, crashPoint: latest.crashPoint, bettingEndsAt: latest.bettingEndsAt }
+        : null,
+    );
   }
 
   private mustGetUser(id: string): User {

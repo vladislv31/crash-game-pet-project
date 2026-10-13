@@ -38,6 +38,12 @@ The game core decides when a round crashes, how the multiplier grows and how lon
 - A cashout is valid only if the round is `RUNNING` and `multiplierAt(t) < crashPoint`, where `t` comes from the server clock at receipt time, never from the client. The check compares integers in hundredths, so floating-point error in `exp`/`ln` never decides money: `e^(ln x)` can return `1.97999…` for `1.98`, which breaks a time-based check at the boundary.
 - Ticks are display-only. They do not decide the crash moment or cashout validity.
 
+### Deterministic timeline and restarts
+
+- A round is fully defined by what is stored before betting opens: `bettingEndsAt` and `crashPoint`. It starts **exactly** at `bettingEndsAt` (not when the timer fires) and crashes at `bettingEndsAt + crashTimeMs(crashPoint)`.
+- On start, the server reads the latest stored round and continues it where its timeline is now: still betting → keep taking bets until `bettingEndsAt`; should be flying → continue the flight at the current multiplier, with cashouts and auto-cashouts working; past its crash time → open a new round (its bets are refunded, ADR-0004).
+- The next round is planned only after the previous round's crash is on record, so a slow write cannot shorten the next betting phase.
+
 ## Alternatives
 
 - **Provably fair, per-round seed with commit–reveal:** publish `sha256(serverSeed)` before betting, reveal the seed after the crash, derive `h` from the seed (or `HMAC(serverSeed, roundId)`). Not needed without real money. Can be added later by changing only where `h` comes from.
@@ -48,5 +54,5 @@ The game core decides when a round crashes, how the multiplier grows and how lon
 
 - The cap limits the round, not the money. A max win per bet (auto-cashout when `bet × m` reaches the limit) belongs to the money flow and is planned for Phase 2.
 - The core is a set of pure functions (crash point, curve, inverse curve) plus a state machine. All of them can be unit-tested without I/O.
-- The crash point is persisted before the round starts, so a restarted instance can finish the round with the same crash point (needed for experiment 3).
+- A restart in the middle of a round continues it with the same timeline, so players lose only the seconds the server was down. If the round should have crashed during the downtime, it is voided instead.
 - Players cannot verify fairness. Acceptable for a project without real money.

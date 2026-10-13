@@ -31,13 +31,20 @@ Server → one client:
 - `snapshot`: current round, own bet in it, balance
 - `bet:accepted`, `cashout:accepted` (with the same `requestId`)
 - `error { requestId?, code, errors? }`; validation errors use `code: 'validation_failed'` and `errors: { field: 'errorKey' }`, the same shape as HTTP 422
+- `balance`: after an auto-cashout or a refund
 
 Server → all clients, **one message per event, no batching** (baseline for experiment 1):
 
 - `round:betting`, `round:started`, `round:tick`, `round:crashed`
-- `bet:placed`, `bet:cashed_out` (other players' activity)
+- `bet:placed`, `bet:cashed_out`, `bet:refunded` (other players' activity)
 
 The crash point is sent only in `round:crashed`.
+
+### Retries and restarts
+
+- Requests are idempotent by `requestId`: a repeated `bet` returns the original bet in any phase (a different bet under the same id → `request_conflict`); a repeated `cashout` returns the original payout.
+- The client keeps the last unanswered request and, after reconnecting and reading the `snapshot`, resends it with the same `requestId` if it still makes sense (bet: betting open and no bet yet; cashout: round running and bet still active).
+- On shutdown the server answers new requests with `unavailable`, finishes the ones in progress, then closes sockets with code `1012` (service restart) so clients reconnect. `unavailable` keeps the request pending for the retry.
 
 ### Units
 
