@@ -17,6 +17,7 @@
 - Typed message contracts (shared package)
 - Wallet/balance, place bet, cashout, auto-cashout
 - Idempotency keys; exactly-once payout
+- Max win per bet: auto-cashout when `bet × multiplier` reaches the limit
 - Minimal player UI (multiplier, bet, cashout, live bets)
 
 ## Phase 3 — Observability
