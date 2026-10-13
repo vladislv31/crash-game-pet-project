@@ -21,8 +21,8 @@ The game core decides when a round crashes, how the multiplier grows and how lon
 ### Multiplier curve
 
 - `m(t) = e^(k · t)`, where `t` is milliseconds since `RUNNING` started and `k = 0.000107` (≈ `ln 2 / 6500`, so 2x at about 6.5 s).
-- Inverse: `crashTimeMs = ln(crashPoint) / k`. The server ends the round at this exact time, independent of ticks.
-- Displayed and paid multipliers are floored to 2 decimals.
+- `multiplierAt(t) = floor(100 · e^(k · t))` in hundredths, same units as the crash point.
+- Inverse: `crashTimeMs = ceil(ln(crashPoint / 100) / k)`, the first whole millisecond at which `multiplierAt` reaches the crash point. It is used only to schedule the crash timer, independent of ticks.
 
 ### Round timings
 
@@ -35,7 +35,7 @@ The game core decides when a round crashes, how the multiplier grows and how lon
 
 ### Rules
 
-- A cashout is valid only if the server receives it at `t < crashTimeMs`. The multiplier comes from the server clock at receipt time, never from the client.
+- A cashout is valid only if the round is `RUNNING` and `multiplierAt(t) < crashPoint`, where `t` comes from the server clock at receipt time, never from the client. The check compares integers in hundredths, so floating-point error in `exp`/`ln` never decides money: `e^(ln x)` can return `1.97999…` for `1.98`, which breaks a time-based check at the boundary.
 - Ticks are display-only. They do not decide the crash moment or cashout validity.
 
 ## Alternatives

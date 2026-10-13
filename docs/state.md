@@ -12,15 +12,16 @@
 - ESLint 10 + typescript-eslint (type-checked) and Prettier, configured once at the root
 - `apps/game-server`: NestJS app with `GET /health`, unit + e2e tests
 - Crash point generator (`src/game/crash-point.ts`): 1% edge, 10 000x cap, hundredths as `number`
+- Multiplier curve (`src/game/multiplier.ts`): `multiplierAt`, `crashTimeMs` (first whole ms reaching the crash point)
 - ADR-0002 game core design accepted (random crash point, not provably fair, 1% edge, k = 0.000107, 15 s / 100 ms / 5 s)
 
 ## In progress
 
-- Nothing
+- Round state machine (`src/game/round.ts`)
 
 ## Next
 
-- Phase 1 (per ADR-0002), in order: multiplier curve + inverse → round state machine → game loop
+- Phase 1 (per ADR-0002), in order: game loop
 
 ## Open questions
 
