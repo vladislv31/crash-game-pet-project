@@ -49,7 +49,8 @@
     - Node default metrics, including event loop lag p50/p90/p99
     - `crash_tick_delay_seconds`: how late each tick fired, measured in `GameLoopService` (game loop unchanged)
     - unit tests 313/313, integration tests 31/31
-  - Next: Prometheus + Grafana in docker-compose with provisioning, then the remaining metrics (request latency, broadcast, saturation, reliability)
+  - Prometheus + Grafana in docker-compose (profile `observability`), provisioned from `ops/`, dashboard `Game server`: written by Claude, checked by the owner
+  - Next: the remaining metrics (request latency, broadcast, saturation, reliability)
 
 ## Backlog (before experiments)
 

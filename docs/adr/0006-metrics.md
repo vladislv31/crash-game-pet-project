@@ -34,6 +34,14 @@ The player-facing p99 is measured by the load generator in Phase 4 (it sees the 
 - Buckets: 1, 2.5, 5, 10, 25, 50, 100, 250, 500 ms, 1 s.
 - Ticks are display-only (ADR-0002), so a late tick costs smoothness, not money. Event loop lag shows how busy the process is; tick delay shows how much of it reaches the game.
 
+### Prometheus and Grafana
+
+- Both run in `docker-compose.yml` under the `observability` profile (`docker compose --profile observability up -d`), so the default `docker compose up -d` used by integration tests still starts only Postgres and Redis. Images are pinned: `prom/prometheus:v3.5.0`, `grafana/grafana:12.1.1`.
+- Prometheus scrapes `host.docker.internal:3000/metrics` every 5 s: the game server runs on the host in this phase, and the default 15 s is too coarse for experiments. Dashboards use `$__rate_interval`, which stays at least four scrape intervals wide. Its data lives in a named volume, so runs can be compared after a restart.
+- Grafana is provisioned from the repo: `ops/grafana/provisioning` (Prometheus datasource with a fixed uid, dashboard provider) and `ops/grafana/dashboards/*.json`. It listens on port 3001 (3000 is the game server), with anonymous admin access, local only.
+- Dashboards can be edited in the UI, but changes last only until the container is recreated; the JSON in the repo is the source of truth.
+- Dashboard `Game server`: tick delay p50/p95/p99 and ticks per second, event loop lag p50/p90/p99/max, CPU, memory, GC time. Queries group by `instance`, ready for Phase 5.
+
 ## Alternatives
 
 - **`@willsoto/nestjs-prometheus`:** less wiring, but a global registry and decorators around what is a few lines of code.
@@ -45,4 +53,5 @@ The player-facing p99 is measured by the load generator in Phase 4 (it sees the 
 
 - `/metrics` is public on the app port. Fine locally; a deployment would restrict it.
 - Percentiles from a histogram are interpolated within a bucket; the buckets bound their precision.
-- Prometheus and Grafana (compose, provisioning, dashboards) and the remaining server metrics are decided in the next steps and recorded here.
+- The remaining server metrics (request latency, broadcast, saturation, reliability) are decided in the next steps and recorded here.
+- With the app on the host, Prometheus depends on `host.docker.internal`; Phase 5 runs the instances in compose and scrapes them by service name.

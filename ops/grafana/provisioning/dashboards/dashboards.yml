@@ -1,0 +1,10 @@
+apiVersion: 1
+
+providers:
+  - name: crash-game
+    type: file
+    # Dashboards live in the repo. UI edits can be saved, but they last only until the container is
+    # recreated: export the JSON back into ops/grafana/dashboards to keep them.
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

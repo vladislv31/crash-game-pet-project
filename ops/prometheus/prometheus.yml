@@ -1,0 +1,12 @@
+# Scrape settings from ADR-0006.
+global:
+  # Experiments need finer resolution than the default 15 s; rate() windows stay >= 4 intervals.
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: game-server
+    metrics_path: /metrics
+    # Phase 5 lists every instance here (never the load balancer), so their series stay apart.
+    static_configs:
+      - targets: ['host.docker.internal:3000']
