@@ -1,7 +1,7 @@
 # Development state
 
 **Current phase:** 1 — Game core
-**Last updated:** 2026-10-12
+**Last updated:** 2026-10-13
 
 ## Done
 
@@ -11,6 +11,7 @@
 - Monorepo (npm workspaces), Node 24 (`.nvmrc`), TypeScript 6 (shared `tsconfig.base.json`)
 - ESLint 10 + typescript-eslint (type-checked) and Prettier, configured once at the root
 - `apps/game-server`: NestJS app with `GET /health`, unit + e2e tests
+- ADR-0002 game core design accepted (random seed + commit–reveal, 1% edge, k = 0.000107, 15 s / 100 ms / 5 s)
 
 ## In progress
 
@@ -18,7 +19,7 @@
 
 ## Next
 
-- Phase 1: round state machine, provably fair crash point, multiplier curve + tick loop
+- Phase 1 (per ADR-0002), in order: crash point generator → multiplier curve + inverse → round state machine → game loop
 
 ## Open questions
 
