@@ -25,10 +25,15 @@ export interface GameState {
   /** Recent crash points, newest first. */
   history: number[];
   lastError: string | null;
-  /** The last request without an answer yet; retried with the same requestId after a reconnect. */
-  pending: ClientMessage | null;
+  /** The last request without an answer yet, with the round it was sent in. */
+  pending: PendingRequest | null;
   /** Increases with every snapshot, i.e. every (re)connect. */
   snapshots: number;
+}
+
+export interface PendingRequest {
+  message: ClientMessage;
+  roundId: string | null;
 }
 
 export type GameAction =
@@ -58,7 +63,7 @@ export function reduce(state: GameState, action: GameAction): GameState {
     case 'socket_closed':
       return { ...state, status: 'disconnected' };
     case 'request':
-      return { ...state, pending: action.message };
+      return { ...state, pending: { message: action.message, roundId: state.round?.id ?? null } };
     case 'message':
       return applyMessage(state, action.message, action.localTime);
   }
@@ -136,22 +141,26 @@ function applyMessage(state: GameState, message: ServerMessage, localTime: numbe
   }
 }
 
-function answered(pending: ClientMessage | null, requestId: string | undefined): boolean {
-  return pending !== null && pending.requestId === requestId;
+function answered(pending: PendingRequest | null, requestId: string | undefined): boolean {
+  return pending !== null && pending.message.requestId === requestId;
 }
 
-/** Whether a request that got no answer before the connection dropped still makes sense to retry. */
-function stillNeeded(pending: ClientMessage | null, synced: GameState): ClientMessage | null {
-  if (!pending) {
-    return null;
+/**
+ * Only a bet is retried, and only into the round it was meant for while betting is still open.
+ * A cashout is not: the server would price it at the moment of the resend, not of the click.
+ */
+function stillNeeded(pending: PendingRequest | null, synced: GameState): PendingRequest | null {
+  const round = synced.round;
+  if (
+    pending?.message.type === 'bet' &&
+    round?.id === pending.roundId &&
+    round.phase === 'BETTING' &&
+    !synced.myBet
+  ) {
+    return pending;
   }
 
-  const phase = synced.round?.phase;
-  if (pending.type === 'bet') {
-    return phase === 'BETTING' && !synced.myBet ? pending : null;
-  }
-
-  return phase === 'RUNNING' && synced.myBet?.status === 'ACTIVE' ? pending : null;
+  return null;
 }
 
 function updateRound(state: GameState, roundId: string, changes: Partial<RoundState>): GameState {

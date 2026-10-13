@@ -421,6 +421,34 @@ describe('BettingService', () => {
   });
 
   describe('shutdown', () => {
+    it('also waits for operations that start while it is draining', async () => {
+      const { placeBet, service, store, user } = await setup();
+      const bob = await store.findOrCreate('bob', '5000', 'token-bob');
+      const finishWrites: (() => void)[] = [];
+      const realPlaceBet = store.placeBet.bind(store);
+      jest
+        .spyOn(store, 'placeBet')
+        .mockImplementation(
+          input => new Promise(resolve => finishWrites.push(() => resolve(realPlaceBet(input)))),
+        );
+      const flush = () => new Promise(resolve => setImmediate(resolve));
+      void placeBet('100', undefined, 'first', user);
+      await flush();
+
+      let drained = false;
+      const draining = service.drain().then(() => (drained = true));
+      void placeBet('100', undefined, 'second', bob);
+      await flush();
+      finishWrites[0]?.();
+      await flush();
+
+      expect(drained).toBe(false);
+
+      finishWrites[1]?.();
+      await draining;
+      expect(drained).toBe(true);
+    });
+
     it('waits for bets that are still being written', async () => {
       const { placeBet, service, store } = await setup();
       let finishWrite = () => undefined as void;

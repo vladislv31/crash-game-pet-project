@@ -6,7 +6,9 @@ import { Bet } from '../betting/bet';
 import {
   BetsStore,
   BetWithBalance,
+  CashOutAttempt,
   CashOutInput,
+  CashOutPrice,
   PlaceBetInput,
   PlaceBetResult,
   UnsettledBet,
@@ -121,6 +123,28 @@ export class InMemoryStore implements UsersStore, BetsStore, RoundsStore {
     this.ledger.push({ userId: user.id, amount: input.payout, type: 'WIN' });
 
     return Promise.resolve({ bet: { ...bet }, balance: user.balance });
+  }
+
+  async cashOutUserBet(
+    userId: string,
+    roundId: string,
+    price: (bet: Bet) => CashOutPrice | null,
+  ): Promise<CashOutAttempt> {
+    const bet = [...this.bets.values()].find(
+      candidate => candidate.userId === userId && candidate.roundId === roundId,
+    );
+    if (!bet) {
+      return { status: 'not_paid', bet: null };
+    }
+
+    if (bet.status === 'CASHED_OUT') {
+      return { status: 'already_paid', bet: { ...bet }, balance: this.mustGetUser(userId).balance };
+    }
+
+    const offer = bet.status === 'ACTIVE' ? price({ ...bet }) : null;
+    const paid = offer ? await this.cashOut({ betId: bet.id, ...offer }) : null;
+
+    return paid ? { status: 'paid', ...paid } : { status: 'not_paid', bet: { ...bet } };
   }
 
   markLost(betId: string): Promise<void> {

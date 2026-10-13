@@ -15,12 +15,18 @@ import { Round } from './round';
 import { ROUNDS_STORE } from './rounds.store';
 import type { RoundsStore } from './rounds.store';
 
+const CRASH_WRITE_FIRST_RETRY_MS = 100;
+const CRASH_WRITE_MAX_RETRY_MS = 5_000;
+
 @Injectable()
 export class GameLoopService implements OnApplicationBootstrap, BeforeApplicationShutdown {
   private readonly logger = new Logger('GameLoop');
   private readonly listeners: ((event: GameEvent) => void)[] = [];
   private readonly loop: GameLoop;
   private readonly pendingWrites = new Set<Promise<void>>();
+  /** Wakes up retry delays early, so shutdown does not wait for them. */
+  private readonly retryWakeups = new Set<() => void>();
+  private stopped = false;
   private bettingEndsAt = 0;
   private startedAt: number | null = null;
 
@@ -29,7 +35,8 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
       generateCrashPoint,
       nextRoundId: randomUUID,
       onEvent: event => this.handleEvent(event),
-      // The previous round's crash must be on record first: settlement treats a round without it as interrupted.
+      // The previous round's crash must be on record first (it is retried until stored):
+      // settlement treats a round without it as interrupted and refunds its bets.
       beforeNextRound: async () => {
         await Promise.allSettled(this.pendingWrites);
       },
@@ -68,7 +75,14 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
 
   /** Runs before TypeORM closes its connection in onApplicationShutdown, so round writes are not cut off. */
   async beforeApplicationShutdown(): Promise<void> {
+    await this.stop();
+  }
+
+  /** Stops the loop and waits for round writes; retries in progress give up. Safe to call twice. */
+  async stop(): Promise<void> {
+    this.stopped = true;
     this.loop.stop();
+    this.retryWakeups.forEach(wakeUp => wakeUp());
     await Promise.allSettled(this.pendingWrites);
   }
 
@@ -99,7 +113,9 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
         this.persist(this.rounds.markStarted(event.roundId, event.startedAt));
         return;
       case 'crashed':
-        this.persist(this.rounds.markCrashed(event.roundId, event.crashedAt));
+        this.track(
+          this.retryUntilStored(() => this.rounds.markCrashed(event.roundId, event.crashedAt)),
+        );
         return;
       case 'tick':
         return;
@@ -119,6 +135,37 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
         this.logger.error({ message: 'Failed to store round', error }),
       ),
     );
+  }
+
+  /** The write is idempotent, so it is safe to repeat until it lands or the app stops. */
+  private async retryUntilStored(write: () => Promise<void>): Promise<void> {
+    let delay = CRASH_WRITE_FIRST_RETRY_MS;
+    while (!this.stopped) {
+      try {
+        await write();
+        return;
+      } catch (error) {
+        this.logger.error({
+          message: 'Failed to store round crash, retrying',
+          retryInMs: delay,
+          error,
+        });
+        await this.sleep(delay);
+        delay = Math.min(delay * 2, CRASH_WRITE_MAX_RETRY_MS);
+      }
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => {
+      const wakeUp = () => {
+        clearTimeout(timer);
+        this.retryWakeups.delete(wakeUp);
+        resolve();
+      };
+      const timer = setTimeout(wakeUp, ms);
+      this.retryWakeups.add(wakeUp);
+    });
   }
 
   private track(write: Promise<void>): void {

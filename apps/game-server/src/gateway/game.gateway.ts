@@ -18,6 +18,7 @@ const RESTART_CLOSE_CODE = 1012;
 
 export interface GatewayGame extends GameSource {
   currentRoundView(): RoundView | null;
+  stop(): Promise<void>;
 }
 
 interface Session {
@@ -54,6 +55,8 @@ export class GameGateway
    */
   async beforeApplicationShutdown(): Promise<void> {
     this.shuttingDown = true;
+    // The loop goes first, so no tick or settlement starts new money operations while draining.
+    await this.game.stop();
     await this.betting.drain();
 
     for (const client of this.sessions.keys()) {

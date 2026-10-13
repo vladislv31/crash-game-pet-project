@@ -2,6 +2,7 @@ import { INestApplication, Logger } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 
 import { InMemoryStore } from '../testing/in-memory-store';
+import * as crashPoint from './crash-point';
 import { GameEvent } from './game-loop';
 import { GameLoopService } from './game-loop.service';
 import { ROUNDS_STORE } from './rounds.store';
@@ -19,6 +20,8 @@ describe('GameLoopService', () => {
   beforeEach(async () => {
     jest.useFakeTimers({ now: 0 });
     logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    // A fixed crash point keeps the tests deterministic: a random 1.00x would crash at the start.
+    jest.spyOn(crashPoint, 'generateCrashPoint').mockReturnValue(500);
     store = new InMemoryStore();
 
     const moduleRef = await Test.createTestingModule({
@@ -30,7 +33,7 @@ describe('GameLoopService', () => {
 
   afterEach(async () => {
     await app.close();
-    logSpy.mockRestore();
+    jest.restoreAllMocks();
     jest.useRealTimers();
   });
 
@@ -178,6 +181,43 @@ describe('GameLoopService', () => {
 
     expect(store.rounds.size).toBe(2);
     expect(service.currentRoundView()).toMatchObject({ phase: 'BETTING' });
+  });
+
+  it('keeps retrying a failed crash write and opens the next round only after it is stored', async () => {
+    const errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    let databaseDown = true;
+    const markCrashed = store.markCrashed.bind(store);
+    jest
+      .spyOn(store, 'markCrashed')
+      .mockImplementation((id, crashedAt) =>
+        databaseDown ? Promise.reject(new Error('database down')) : markCrashed(id, crashedAt),
+      );
+    await start();
+    const firstRoundId = service.currentRound!.id;
+
+    await jest.advanceTimersByTimeAsync(BETTING_MS + MAX_RUNNING_MS + 60_000);
+
+    expect(store.rounds.size).toBe(1);
+    expect(store.rounds.get(firstRoundId)?.crashedAt).toBeNull();
+    expect(errorSpy.mock.calls.length).toBeGreaterThan(1);
+
+    databaseDown = false;
+    await jest.advanceTimersByTimeAsync(5_000);
+
+    expect(store.rounds.get(firstRoundId)?.crashedAt).toEqual(expect.any(Number));
+    expect(store.rounds.size).toBe(2);
+  });
+
+  it('stops retrying the crash write when the app shuts down', async () => {
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    jest.spyOn(store, 'markCrashed').mockRejectedValue(new Error('database down'));
+    await start();
+    await jest.advanceTimersByTimeAsync(BETTING_MS + MAX_RUNNING_MS);
+
+    const closing = app.close();
+    await jest.advanceTimersByTimeAsync(0);
+
+    await expect(closing).resolves.toBeUndefined();
   });
 
   it('passes every game event to subscribers', async () => {

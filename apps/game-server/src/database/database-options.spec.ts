@@ -29,18 +29,12 @@ describe('databaseOptions', () => {
 });
 
 describe('appDatabaseOptions', () => {
-  // A cashout received before the crash must commit or fail within the 5 s pause,
-  // before the settlement sweep can mark its bet as lost (ADR-0004).
-  it('bounds pool wait and transaction time below the 5 s pause', () => {
-    const { extra } = appDatabaseOptions({});
-
-    expect(extra).toEqual({
-      connectionTimeoutMillis: 1_000,
-      options: '-c transaction_timeout=3000',
-    });
+  // Migrations run separately with databaseOptions(), so the app's transaction timeout cannot cut them off.
+  it('does not run migrations on the time-bounded app connection', () => {
+    expect(appDatabaseOptions({}).migrationsRun).toBeFalsy();
   });
 
-  it('applies migrations on start', () => {
-    expect(appDatabaseOptions({}).migrationsRun).toBe(true);
+  it('connects to the same database', () => {
+    expect(appDatabaseOptions({ POSTGRES_DB: 'game' })).toMatchObject({ database: 'game' });
   });
 });

@@ -58,9 +58,11 @@ export class BettingService implements OnModuleInit {
     this.listeners.push(listener);
   }
 
-  /** Resolves once every money operation that already started has finished. */
+  /** Resolves once no money operation is running, including ones that start while draining. */
   async drain(): Promise<void> {
-    await Promise.allSettled(this.inFlight);
+    while (this.inFlight.size > 0) {
+      await Promise.allSettled(this.inFlight);
+    }
   }
 
   /** A retried `requestId` returns the original bet in any phase; the same id with a different bet is a conflict. */
@@ -135,35 +137,28 @@ export class BettingService implements OnModuleInit {
 
     // Read before any await: the multiplier is the one at receipt time.
     const multiplier = this.cashoutMultiplier(round, receivedAt);
-    const bet = await this.store.findUserBet(user.id, round.id);
-    if (bet?.status === 'CASHED_OUT') {
-      return { bet, balance: await this.store.getBalance(user.id) };
-    }
+    const attempt = await this.store.cashOutUserBet(user.id, round.id, bet => {
+      if (multiplier === null) {
+        return null;
+      }
+      const paid = Math.min(multiplier, effectiveTarget(bet.amount, bet.autoCashout));
+      return { multiplier: paid, payout: payoutFor(bet.amount, paid) };
+    });
 
-    if (multiplier === null) {
-      throw new BettingError('cashout_closed');
+    switch (attempt.status) {
+      case 'paid':
+        this.tracked.get(attempt.bet.roundId)?.delete(attempt.bet.id);
+        this.emit({ type: 'cashed_out', bet: attempt.bet, balance: attempt.balance });
+        return { bet: attempt.bet, balance: attempt.balance };
+      case 'already_paid':
+        // A repeated cashout, or an auto-cashout that came first: answer with that result.
+        return { bet: attempt.bet, balance: attempt.balance };
+      case 'not_paid':
+        if (multiplier === null) {
+          throw new BettingError('cashout_closed');
+        }
+        throw new BettingError(attempt.bet ? 'already_settled' : 'no_active_bet');
     }
-
-    if (!bet) {
-      throw new BettingError('no_active_bet');
-    }
-
-    if (bet.status !== 'ACTIVE') {
-      throw new BettingError('already_settled');
-    }
-
-    const paidMultiplier = Math.min(multiplier, effectiveTarget(bet.amount, bet.autoCashout));
-    const result = await this.settleAsWin(bet, paidMultiplier);
-    if (result) {
-      return result;
-    }
-
-    // A concurrent cashout or auto-cashout won the race: answer with its result.
-    const settled = await this.store.findUserBet(user.id, round.id);
-    if (settled?.status === 'CASHED_OUT') {
-      return { bet: settled, balance: await this.store.getBalance(user.id) };
-    }
-    throw new BettingError('already_settled');
   }
 
   private async handleGameEventNow(event: GameEvent): Promise<void> {

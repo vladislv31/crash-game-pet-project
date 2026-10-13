@@ -30,7 +30,8 @@
   - settlement sweep: crashed rounds settled, interrupted rounds refunded (`VOID` + `REFUND`)
   - app transaction timeouts; late bets are not created
   - idempotent bet and cashout retries; client resends the unanswered request after reconnecting
-  - graceful shutdown: drain requests and writes before the database closes
+  - graceful shutdown: stop the loop, drain requests and writes before the database closes
+- Second review fixes (by Claude, on request), awaiting owner review; integration tests not run yet: crash write retried until stored, cashout as one transaction, bet inserted before debit, migrations on a separate connection without timeouts, client retries only bets of the same round, shutdown stops the loop before draining
 
 ## Next
 

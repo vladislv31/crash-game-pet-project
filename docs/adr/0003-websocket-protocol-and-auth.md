@@ -43,7 +43,7 @@ The crash point is sent only in `round:crashed`.
 ### Retries and restarts
 
 - Requests are idempotent by `requestId`: a repeated `bet` returns the original bet in any phase (a different bet under the same id → `request_conflict`); a repeated `cashout` returns the original payout.
-- The client keeps the last unanswered request and, after reconnecting and reading the `snapshot`, resends it with the same `requestId` if it still makes sense (bet: betting open and no bet yet; cashout: round running and bet still active).
+- The client keeps the last unanswered request with the round it was sent in. After reconnecting it resends a **bet** with the same `requestId` only if the snapshot shows the same round still in betting and no bet yet. A **cashout** is never resent automatically: the server would price it at the moment of the resend, not of the click; the player sees the round state and can cash out again.
 - On shutdown the server answers new requests with `unavailable`, finishes the ones in progress, then closes sockets with code `1012` (service restart) so clients reconnect. `unavailable` keeps the request pending for the retry.
 
 ### Units

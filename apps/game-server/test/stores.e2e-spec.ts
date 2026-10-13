@@ -142,6 +142,19 @@ describe('PostgreSQL stores', () => {
       expect(await balanceOf(user.id)).toBe('5000');
     });
 
+    it('returns the original bet to a concurrent retry even when the balance covers only one bet', async () => {
+      const user = await createUser('alice', '150');
+      const roundId = await openRound();
+
+      const results = await Promise.all(
+        Array.from({ length: 10 }, () => placeBet(user, roundId, 'same-key')),
+      );
+
+      expect(results.filter(result => result.status === 'placed')).toHaveLength(1);
+      expect(results.filter(result => result.status === 'duplicate')).toHaveLength(9);
+      expect(await balanceOf(user.id)).toBe('50');
+    });
+
     it('rejects a bet larger than the balance without debiting', async () => {
       const user = await createUser('alice', '99.99');
 
@@ -258,6 +271,61 @@ describe('PostgreSQL stores', () => {
       await betInRound('bob', false);
 
       await expect(bets.findActiveBets(bet.roundId)).resolves.toEqual([bet]);
+    });
+  });
+
+  describe('cashOutUserBet', () => {
+    const price = () => ({ multiplier: 150, payout: '150' });
+
+    async function activeBetOf(username = 'alice') {
+      const user = await createUser(username);
+      const placed = await placeBet(user, await openRound());
+      if (placed.status !== 'placed') {
+        throw new Error('Bet setup failed');
+      }
+      return { user, bet: placed.bet };
+    }
+
+    it('finds and pays the bet in one transaction, exactly once for concurrent requests', async () => {
+      const { user, bet } = await activeBetOf();
+
+      const results = await Promise.all(
+        Array.from({ length: 10 }, () => bets.cashOutUserBet(user.id, bet.roundId, price)),
+      );
+
+      expect(results.filter(result => result.status === 'paid')).toHaveLength(1);
+      expect(results.filter(result => result.status === 'already_paid')).toHaveLength(9);
+      expect(await balanceOf(user.id)).toBe('5050');
+      expect((await ledgerOf(user.id)).filter(entry => entry.type === 'WIN')).toHaveLength(1);
+    });
+
+    it('does not pay when the price is refused', async () => {
+      const { user, bet } = await activeBetOf();
+
+      await expect(bets.cashOutUserBet(user.id, bet.roundId, () => null)).resolves.toEqual({
+        status: 'not_paid',
+        bet,
+      });
+      expect(await balanceOf(user.id)).toBe('4900');
+    });
+
+    it('does not pay a lost bet', async () => {
+      const { user, bet } = await activeBetOf();
+      await bets.markLost(bet.id);
+
+      await expect(bets.cashOutUserBet(user.id, bet.roundId, price)).resolves.toMatchObject({
+        status: 'not_paid',
+        bet: { status: 'LOST' },
+      });
+    });
+
+    it('reports a missing bet', async () => {
+      const user = await createUser();
+
+      await expect(bets.cashOutUserBet(user.id, randomUUID(), price)).resolves.toEqual({
+        status: 'not_paid',
+        bet: null,
+      });
     });
   });
 

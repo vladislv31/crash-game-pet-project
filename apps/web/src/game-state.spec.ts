@@ -231,6 +231,7 @@ describe('reduce', () => {
   describe('retrying requests after a reconnect', () => {
     const BET = { type: 'bet', requestId: 'r1', amount: '100' } as const;
     const CASHOUT = { type: 'cashout', requestId: 'r2' } as const;
+    const PENDING_BET = { message: BET, roundId: 'round-1' };
 
     function sent(state: GameState, message: typeof BET | typeof CASHOUT): GameState {
       return reduce(state, { type: 'request', message });
@@ -247,9 +248,9 @@ describe('reduce', () => {
       round: { id: 'round-1', phase: 'RUNNING' as const, bettingEndsAt: 16_000, startedAt: 16_000 },
     };
 
-    it('remembers a request until its answer arrives', () => {
+    it('remembers a request with its round until the answer arrives', () => {
       const pending = sent(connected(), BET);
-      expect(pending.pending).toEqual(BET);
+      expect(pending.pending).toEqual(PENDING_BET);
 
       const answered = receive(pending, {
         type: 'bet:accepted',
@@ -277,7 +278,7 @@ describe('reduce', () => {
         code: 'unavailable',
       });
 
-      expect(state.pending).toEqual(BET);
+      expect(state.pending).toEqual(PENDING_BET);
     });
 
     it('ignores answers to other requests', () => {
@@ -287,11 +288,11 @@ describe('reduce', () => {
         code: 'betting_closed',
       });
 
-      expect(state.pending).toEqual(BET);
+      expect(state.pending).toEqual(PENDING_BET);
     });
 
-    it('retries a pending bet while betting is still open', () => {
-      expect(reconnected(sent(connected(), BET)).pending).toEqual(BET);
+    it('retries a pending bet while betting for the same round is still open', () => {
+      expect(reconnected(sent(connected(), BET)).pending).toEqual(PENDING_BET);
     });
 
     it('drops a pending bet that the snapshot shows was placed', () => {
@@ -302,16 +303,18 @@ describe('reduce', () => {
       expect(reconnected(sent(connected(), BET), RUNNING).pending).toBeNull();
     });
 
-    it('retries a pending cashout while the round runs and the bet is active', () => {
-      const state = reconnected(sent(connected(), CASHOUT), { ...RUNNING, bet: bet() });
+    it('drops a pending bet when a new round is open after reconnecting', () => {
+      const nextRound = {
+        round: { id: 'round-2', phase: 'BETTING' as const, bettingEndsAt: 40_000, startedAt: null },
+      };
 
-      expect(state.pending).toEqual(CASHOUT);
+      expect(reconnected(sent(connected(), BET), nextRound).pending).toBeNull();
     });
 
-    it('drops a pending cashout that the snapshot shows was paid', () => {
-      const paid = bet({ status: 'CASHED_OUT', cashoutMultiplier: 150, payout: '150' });
+    it('does not resend a cashout: it would be paid at the multiplier of the resend, not of the click', () => {
+      const state = reconnected(sent(connected(), CASHOUT), { ...RUNNING, bet: bet() });
 
-      expect(reconnected(sent(connected(), CASHOUT), { ...RUNNING, bet: paid }).pending).toBeNull();
+      expect(state.pending).toBeNull();
     });
 
     it('counts snapshots, so the client knows when to retry', () => {

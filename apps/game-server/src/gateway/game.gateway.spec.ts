@@ -54,6 +54,7 @@ function setup(crashPoint = 500) {
   const game: GatewayGame = {
     currentRound: round,
     subscribe: listener => listeners.push(listener),
+    stop: jest.fn(() => Promise.resolve()),
     currentRoundView: () => ({
       id: round.id,
       phase: round.phase,
@@ -84,7 +85,7 @@ function setup(crashPoint = 500) {
     return socket;
   }
 
-  return { store, round, gateway, betting, emitGameEvent, connect };
+  return { store, round, game, gateway, betting, emitGameEvent, connect };
 }
 
 describe('GameGateway', () => {
@@ -375,6 +376,23 @@ describe('GameGateway', () => {
   });
 
   describe('shutdown', () => {
+    it('stops the game loop before waiting for money operations', async () => {
+      const { gateway, game, betting } = setup();
+      const order: string[] = [];
+      game.stop = () => {
+        order.push('stop game');
+        return Promise.resolve();
+      };
+      jest.spyOn(betting, 'drain').mockImplementation(() => {
+        order.push('drain bets');
+        return Promise.resolve();
+      });
+
+      await gateway.beforeApplicationShutdown();
+
+      expect(order).toEqual(['stop game', 'drain bets']);
+    });
+
     it('answers new requests with unavailable while shutting down', async () => {
       const { connect, gateway } = setup();
       const socket = await connect();

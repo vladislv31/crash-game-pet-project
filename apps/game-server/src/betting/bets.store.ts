@@ -27,6 +27,15 @@ export interface BetWithBalance {
   balance: string;
 }
 
+export interface CashOutPrice {
+  multiplier: number;
+  payout: string;
+}
+
+export type CashOutAttempt =
+  | { status: 'paid' | 'already_paid'; bet: Bet; balance: string }
+  | { status: 'not_paid'; bet: Bet | null };
+
 export interface CashOutInput {
   betId: string;
   multiplier: number;
@@ -39,6 +48,15 @@ export interface BetsStore {
   placeBet(input: PlaceBetInput): Promise<PlaceBetResult>;
   /** Credits the payout only if the bet is still ACTIVE; returns null otherwise. */
   cashOut(input: CashOutInput): Promise<BetWithBalance | null>;
+  /**
+   * A player's cashout as one transaction: finds and locks their bet in the round and pays it if it is
+   * ACTIVE and `price` returns a price. A single bounded transaction always ends before settlement starts.
+   */
+  cashOutUserBet(
+    userId: string,
+    roundId: string,
+    price: (bet: Bet) => CashOutPrice | null,
+  ): Promise<CashOutAttempt>;
   markLost(betId: string): Promise<void>;
   /** Voids the bet and returns its amount, only if it is still ACTIVE; returns null otherwise. */
   refund(betId: string): Promise<BetWithBalance | null>;

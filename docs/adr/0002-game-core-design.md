@@ -42,7 +42,7 @@ The game core decides when a round crashes, how the multiplier grows and how lon
 
 - A round is fully defined by what is stored before betting opens: `bettingEndsAt` and `crashPoint`. It starts **exactly** at `bettingEndsAt` (not when the timer fires) and crashes at `bettingEndsAt + crashTimeMs(crashPoint)`.
 - On start, the server reads the latest stored round and continues it where its timeline is now: still betting → keep taking bets until `bettingEndsAt`; should be flying → continue the flight at the current multiplier, with cashouts and auto-cashouts working; past its crash time → open a new round (its bets are refunded, ADR-0004).
-- The next round is planned only after the previous round's crash is on record, so a slow write cannot shorten the next betting phase.
+- The next round is planned only after the previous round's crash is on record. The crash write is retried with backoff until it succeeds (it is idempotent), so a database blip cannot make a round that really crashed look interrupted; the game waits instead of opening the next round. If the process dies before the write succeeds, the round counts as interrupted.
 
 ## Alternatives
 

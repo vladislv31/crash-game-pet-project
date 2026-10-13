@@ -13,7 +13,7 @@ import {
 import { UserEntity } from '../users/user.entity';
 
 // Bets are financial records: they are never deleted, so there is no soft-delete column.
-// round_id has no foreign key: the round row is written asynchronously when betting opens.
+// round_id has no foreign key; bets are only accepted into rounds already stored (ADR-0004).
 @Entity('bets')
 @Unique('uq_bets_user_round', ['userId', 'roundId'])
 @Unique('uq_bets_user_idempotency', ['userId', 'idempotencyKey'])

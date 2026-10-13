@@ -9,7 +9,9 @@ import { BetEntity } from './bet.entity';
 import {
   BetsStore,
   BetWithBalance,
+  CashOutAttempt,
   CashOutInput,
+  CashOutPrice,
   PlaceBetInput,
   PlaceBetResult,
   UnsettledBet,
@@ -27,6 +29,9 @@ export class TypeOrmBetsStore implements BetsStore {
     } catch (error) {
       if (error instanceof BettingClosedError) {
         return { status: 'betting_closed' };
+      }
+      if (error instanceof InsufficientFundsError) {
+        return { status: 'insufficient_funds' };
       }
 
       // Lost a race with a concurrent request; the transaction rolled back, so nothing was debited.
@@ -48,36 +53,66 @@ export class TypeOrmBetsStore implements BetsStore {
   }
 
   cashOut(input: CashOutInput): Promise<BetWithBalance | null> {
+    return this.dataSource.transaction(manager => this.payIn(manager, input));
+  }
+
+  cashOutUserBet(
+    userId: string,
+    roundId: string,
+    price: (bet: Bet) => CashOutPrice | null,
+  ): Promise<CashOutAttempt> {
     return this.dataSource.transaction(async manager => {
-      const settled = await updateReturning<{ user_id: string }>(
-        manager,
-        `UPDATE bets
-         SET status = 'CASHED_OUT', cashout_multiplier = $2, payout = $3, settled_at = now()
-         WHERE id = $1 AND status = 'ACTIVE'
-         RETURNING user_id`,
-        [input.betId, input.multiplier, input.payout],
-      );
-      const [bet] = settled;
-      if (!bet) {
-        return null;
+      // The row lock makes concurrent cashouts of the same bet wait here and then see CASHED_OUT.
+      const entity = await manager.findOne(BetEntity, {
+        where: { userId, roundId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!entity) {
+        return { status: 'not_paid', bet: null };
       }
 
-      const [user] = await updateReturning<{ balance: string }>(
-        manager,
-        'UPDATE users SET balance = balance + $1 WHERE id = $2 RETURNING balance',
-        [input.payout, bet.user_id],
-      );
-      await manager.insert(LedgerEntryEntity, {
-        userId: bet.user_id,
-        betId: input.betId,
-        type: 'WIN',
-        amount: input.payout,
-      });
+      const bet = toBet(entity);
+      if (bet.status === 'CASHED_OUT') {
+        const user = await manager.findOneByOrFail(UserEntity, { id: userId });
+        return { status: 'already_paid', bet, balance: fromNumeric(user.balance) };
+      }
 
-      const updated = await manager.findOneByOrFail(BetEntity, { id: input.betId });
+      const offer = bet.status === 'ACTIVE' ? price(bet) : null;
+      const paid = offer ? await this.payIn(manager, { betId: bet.id, ...offer }) : null;
 
-      return { bet: toBet(updated), balance: fromNumeric(mustExist(user).balance) };
+      return paid ? { status: 'paid', ...paid } : { status: 'not_paid', bet };
     });
+  }
+
+  private async payIn(manager: EntityManager, input: CashOutInput): Promise<BetWithBalance | null> {
+    const settled = await updateReturning<{ user_id: string }>(
+      manager,
+      `UPDATE bets
+       SET status = 'CASHED_OUT', cashout_multiplier = $2, payout = $3, settled_at = now()
+       WHERE id = $1 AND status = 'ACTIVE'
+       RETURNING user_id`,
+      [input.betId, input.multiplier, input.payout],
+    );
+    const [bet] = settled;
+    if (!bet) {
+      return null;
+    }
+
+    const [user] = await updateReturning<{ balance: string }>(
+      manager,
+      'UPDATE users SET balance = balance + $1 WHERE id = $2 RETURNING balance',
+      [input.payout, bet.user_id],
+    );
+    await manager.insert(LedgerEntryEntity, {
+      userId: bet.user_id,
+      betId: input.betId,
+      type: 'WIN',
+      amount: input.payout,
+    });
+
+    const updated = await manager.findOneByOrFail(BetEntity, { id: input.betId });
+
+    return { bet: toBet(updated), balance: fromNumeric(mustExist(user).balance) };
   }
 
   async markLost(betId: string): Promise<void> {
@@ -188,15 +223,8 @@ export class TypeOrmBetsStore implements BetsStore {
       return { status: 'already_bet' };
     }
 
-    const [debited] = await updateReturning<{ balance: string }>(
-      manager,
-      'UPDATE users SET balance = balance - $1 WHERE id = $2 AND balance >= $1 RETURNING balance',
-      [input.amount, input.userId],
-    );
-    if (!debited) {
-      return { status: 'insufficient_funds' };
-    }
-
+    // The bet goes in before the debit: a concurrent retry then hits the idempotency constraint and
+    // gets the original bet, instead of failing the balance check against the already debited balance.
     const bet = await manager.save(
       manager.create(BetEntity, {
         roundId: input.roundId,
@@ -211,6 +239,16 @@ export class TypeOrmBetsStore implements BetsStore {
         settledAt: null,
       }),
     );
+
+    const [debited] = await updateReturning<{ balance: string }>(
+      manager,
+      'UPDATE users SET balance = balance - $1 WHERE id = $2 AND balance >= $1 RETURNING balance',
+      [input.amount, input.userId],
+    );
+    if (!debited) {
+      throw new InsufficientFundsError();
+    }
+
     await manager.insert(LedgerEntryEntity, {
       userId: input.userId,
       betId: bet.id,
@@ -250,6 +288,9 @@ export class TypeOrmBetsStore implements BetsStore {
 
 /** Thrown inside the bet transaction to roll it back, debit included, when betting has already ended. */
 class BettingClosedError extends Error {}
+
+/** Thrown inside the bet transaction to roll back the inserted bet when the balance is too low. */
+class InsufficientFundsError extends Error {}
 
 interface UnsettledBetRow {
   id: string;

@@ -60,15 +60,15 @@ export function useGameSocket(
     }
   }, []);
 
-  // After every (re)connect, resend the request that got no answer, with the same requestId:
-  // the server either finds it already done or does it now, never twice.
+  // After every (re)connect, resend the bet that got no answer, with the same requestId:
+  // the server either finds it already placed or places it now, never twice.
   const pendingRef = useRef(state.pending);
   pendingRef.current = state.pending;
   useEffect(() => {
     const pending = pendingRef.current;
     const socket = socketRef.current;
     if (pending && socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(pending));
+      socket.send(JSON.stringify(pending.message));
     }
   }, [state.snapshots]);
 

@@ -30,8 +30,8 @@ Bets move money: a bet debits the balance, a cashout credits it. Experiment 4 se
 
 One transaction:
 
-1. Debit with a conditional update: `UPDATE users SET balance = balance - :amount WHERE id = :id AND balance >= :amount`. No row → `insufficient_funds`.
-2. Insert the bet and a `BET` ledger entry.
+1. Insert the bet. The unique constraints decide first, so a concurrent retry gets the original bet instead of failing the balance check against the already debited balance.
+2. Debit with a conditional update: `UPDATE users SET balance = balance - :amount WHERE id = :id AND balance >= :amount`. No row → roll back → `insufficient_funds`. Then insert a `BET` ledger entry.
 3. Last statement before commit: `SELECT clock_timestamp() < betting_ends_at FROM rounds WHERE id = :roundId`. False or no round → roll back → `betting_closed`.
 
 Unique constraints:
@@ -44,6 +44,7 @@ A bet takes part in a round only if it is **both** received while betting is ope
 ### Cashout (exactly once)
 
 - The multiplier comes from the round at receipt time (ADR-0002).
+- A player's cashout is **one** transaction: find and lock (`FOR UPDATE`) their bet in the round, then pay it. One bounded transaction always ends before settlement starts.
 - One transaction: `UPDATE bets SET status = 'CASHED_OUT' … WHERE id = :id AND status = 'ACTIVE'`. Only if that changed a row: credit the balance and insert a `WIN` entry.
 - Zero rows: if the bet is `CASHED_OUT` (a repeated or concurrent cashout, or an auto-cashout that came first), the original result is returned; otherwise `already_settled`.
 - The database decides the winner of concurrent cashouts, so this holds across instances.
@@ -58,7 +59,7 @@ A bet takes part in a round only if it is **both** received while betting is ope
 ### Settling a round
 
 - Losing bets are **not** closed at the crash: a cashout received just before the crash may still be in its transaction.
-- App transactions are bounded: at most 1 s waiting for a pooled connection, at most 3 s per transaction (PostgreSQL `transaction_timeout`). Together they stay below the 5 s pause, so an in-flight cashout commits or fails before settlement starts. The migration CLI has no such limits.
+- App transactions are bounded: at most 1 s waiting for a pooled connection, at most 3 s per transaction (PostgreSQL `transaction_timeout`). Together they stay below the 5 s pause, so an in-flight cashout commits or fails before settlement starts. Migrations run on a separate connection without these limits, before the app starts.
 - Every time a round opens betting, a **settlement sweep** settles every `ACTIVE` bet of every other round, using what is stored in `rounds`:
   - crashed (`crashed_at` set): target below the crash point → cashed out at the target, otherwise `LOST`;
   - interrupted (no `crashed_at`: the server was down when the round should have crashed): **voided**, status `VOID`, the amount is returned with a `REFUND` ledger entry. This follows the usual "malfunction voids all pays and plays" rule: players could not cash out while the server was down.
@@ -67,7 +68,7 @@ A bet takes part in a round only if it is **both** received while betting is ope
 
 ### Shutdown
 
-- On shutdown the server stops taking requests, waits for bets, cashouts and settlements already in progress, waits for pending round writes, and only then closes the database connection. Nothing is cut off mid-transaction; anything not started is retried by the client (ADR-0003) or settled by the next instance.
+- On shutdown the server stops taking requests, stops the game loop (so no tick or settlement starts new work), waits for money operations in progress (including ones that started meanwhile) and for pending round writes, and only then closes the database connection. Nothing is cut off mid-transaction; anything not started is retried by the client (ADR-0003) or settled by the next instance.
 
 ## Alternatives
 
