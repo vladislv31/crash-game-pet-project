@@ -22,8 +22,10 @@ A multiplayer crash game (iGaming) over WebSockets. It comes with a test dashboa
 
 - Node 24.9+ required (`.nvmrc`): Jest loads ESM-only NestJS 12 via `--experimental-vm-modules`, already set in the test scripts
 - `npm test`, `npm run lint`, `npm run format:check` from the root run all workspaces
-- `npm run test:e2e -w game-server`, `npm run start:dev -w game-server`
 - `docker compose up -d` starts Postgres and Redis
+- `npm run start:dev -w game-server` (port 3000, applies migrations on start), `npm run dev -w web` (port 5173, proxies `/auth` and `/ws` to 3000)
+- `npm run test:e2e -w game-server`: integration tests against PostgreSQL (database `crash_test`, created automatically)
+- Migrations: `npm run migration:generate -w game-server -- src/database/migrations/<name>`, then run the same command again: it must report no changes
 
 ## Rules
 

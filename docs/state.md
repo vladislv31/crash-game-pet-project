@@ -1,6 +1,6 @@
 # Development state
 
-**Current phase:** 1 — Game core
+**Current phase:** 2 — WebSocket protocol + money (implemented, awaiting owner review)
 **Last updated:** 2026-10-13
 
 ## Done
@@ -20,12 +20,18 @@
 
 ## In progress
 
-- Phase 2 decisions (see Open questions)
+- Phase 2, implemented by Claude on request, awaiting owner review and first manual run:
+  - ADR-0003 (protocol, fake auth) and ADR-0004 (wallet, settlement)
+  - `packages/contracts`: type-only message contract
+  - game-server: users/auth, betting (bets, cashouts, auto-cashout, max win, settlement), PostgreSQL stores, WebSocket gateway, round persistence
+  - `apps/web`: React + Vite client
+- Not done yet: the initial migration (needs a running PostgreSQL), integration tests not run yet
 
 ## Next
 
-- Phase 2: WebSocket protocol + money
+- Owner: `docker compose up -d` → generate the initial migration (twice, second must be empty) → `npm run test:e2e -w game-server` → run server + web
+- Phase 3: observability
 
 ## Open questions
 
-- None
+- Max win per bet: 100 000 was chosen by Claude (ADR-0004), confirm or change

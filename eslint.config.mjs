@@ -22,6 +22,14 @@ export default defineConfig(
     },
   },
   {
+    // Jest asymmetric matchers (expect.any, expect.objectContaining) and supertest bodies are typed as any.
+    files: ['**/*.spec.ts', '**/*.e2e-spec.ts'],
+    rules: {
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+    },
+  },
+  {
     files: ['**/*.{js,mjs,cjs}'],
     extends: [tseslint.configs.disableTypeChecked],
   },

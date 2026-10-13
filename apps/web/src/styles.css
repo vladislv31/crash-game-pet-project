@@ -1,0 +1,176 @@
+:root {
+  --bg: #f4f5f7;
+  --card: #ffffff;
+  --text: #16181d;
+  --muted: #6b7280;
+  --border: #e3e5ea;
+  --accent: #2563eb;
+  --win: #15803d;
+  --loss: #b91c1c;
+  font-family: system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111318;
+    --card: #1b1e25;
+    --text: #e8eaee;
+    --muted: #9aa1ad;
+    --border: #2b2f39;
+    --accent: #60a5fa;
+    --win: #4ade80;
+    --loss: #f87171;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+}
+
+.game,
+.login {
+  max-width: 640px;
+  margin: 24px auto;
+  padding: 0 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+header button {
+  margin-left: auto;
+}
+
+label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+input,
+button {
+  font: inherit;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+}
+
+button {
+  cursor: pointer;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.bet-panel form {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.bet-panel .cashout {
+  width: 100%;
+  margin-top: 8px;
+  background: var(--win);
+  border-color: var(--win);
+}
+
+.round {
+  text-align: center;
+}
+
+.round .label {
+  color: var(--muted);
+  margin: 0;
+}
+
+.multiplier,
+.countdown {
+  font-size: 56px;
+  font-weight: 700;
+  margin: 8px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.round.running .multiplier {
+  color: var(--accent);
+}
+
+.round.crashed .multiplier {
+  color: var(--loss);
+}
+
+.history {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--loss);
+}
+
+.chip.high {
+  color: var(--win);
+}
+
+.bets table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.bets td {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.win {
+  color: var(--win);
+}
+
+.error {
+  color: var(--loss);
+}
+
+.status.connected {
+  color: var(--win);
+}
+
+.status.disconnected {
+  color: var(--loss);
+}
+
+@media (max-width: 480px) {
+  .bet-panel form {
+    grid-template-columns: 1fr;
+  }
+}
