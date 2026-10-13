@@ -5,19 +5,14 @@
 
 ## Context
 
-The game core decides when a round crashes, how the multiplier grows and how long each phase lasts. It must be provably fair (players can verify the crash point was not changed after bets were placed) and simple enough to build first, before WebSockets, money and scaling.
+The game core decides when a round crashes, how the multiplier grows and how long each phase lasts. This is a learning project with no real money, so players do not need to verify fairness. The core must be simple enough to build first, before WebSockets, money and scaling.
 
 ## Decision
 
-### Provably fair: random seed per round with commit–reveal
-
-- Before betting opens, the server generates `serverSeed` = 32 random bytes (`crypto.randomBytes`) and persists it.
-- `BETTING` start: the server publishes `seedHash = sha256(serverSeed)`.
-- After `CRASHED`: the server reveals `serverSeed`. Anyone can check `sha256(serverSeed) === seedHash` and recompute the crash point.
-
 ### Crash point
 
-- `h` = first 52 bits (13 hex chars) of `HMAC-SHA256(key = serverSeed, message = roundId)`, `e = 2^52`.
+- Not provably fair: no seeds, no published hashes.
+- Before betting opens, the server draws `h` = a uniform random integer in `[0, 2^52)` from `node:crypto` (not `Math.random`), computes the crash point and persists it. `e = 2^52`.
 - `crashPoint = max(1.00, floor(99 · e / (e − h)) / 100)`.
 - This gives a **1% house edge**: `P(crash ≥ x) ≈ 0.99 / x`, and about 1% of rounds crash instantly at 1.00x.
 - No max multiplier cap.
@@ -44,11 +39,12 @@ The game core decides when a round crashes, how the multiplier grows and how lon
 
 ## Alternatives
 
-- **Hash chain (Bustabit-style):** precompute a chain of seeds and play it in reverse, so the operator commits to all future rounds at once. Stronger, but more setup (chain generation, storage, a published terminating hash). Postponed.
+- **Provably fair, per-round seed with commit–reveal:** publish `sha256(serverSeed)` before betting, reveal the seed after the crash, derive `h` from the seed (or `HMAC(serverSeed, roundId)`). Not needed without real money. Can be added later by changing only where `h` comes from.
+- **Provably fair, hash chain (Bustabit-style):** commits to all future rounds at once. Strongest option, most setup. Not needed.
 - **Crash time from ticks** (check `m ≥ crashPoint` on each tick): simpler, but the crash moment depends on tick timing and drifts under load.
 
 ## Consequences
 
 - The core is a set of pure functions (crash point, curve, inverse curve) plus a state machine. All of them can be unit-tested without I/O.
-- `serverSeed` is persisted before the round starts, so a restarted instance can finish the round with the same crash point (needed for experiment 3).
-- Players must trust each round's commit individually. Moving to a hash chain later changes only seed generation; the crash point formula stays the same.
+- The crash point is persisted before the round starts, so a restarted instance can finish the round with the same crash point (needed for experiment 3).
+- Players cannot verify fairness. Acceptable for a project without real money.

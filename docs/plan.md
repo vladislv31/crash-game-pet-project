@@ -9,8 +9,7 @@
 ## Phase 1 — Game core (learning zone)
 
 - Round state machine: `BETTING → RUNNING → CRASHED → BETTING`
-- Provably fair crash point (server seed hash published before the round, seed revealed after), see ADR-0002
-- Later: replace per-round seed with a hash chain
+- Random crash point with 1% house edge (not provably fair), see ADR-0002
 - Multiplier curve + server tick loop
 
 ## Phase 2 — WebSocket protocol + money
