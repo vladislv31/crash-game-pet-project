@@ -51,6 +51,14 @@ describe('AppController (e2e)', () => {
     ]);
   });
 
+  it('serves metrics without logging the scrape', async () => {
+    const response = await request(app.getHttpServer()).get('/metrics').expect(200);
+
+    expect(response.text).toContain('# TYPE crash_tick_delay_seconds histogram');
+    expect(response.text).toContain('# TYPE nodejs_eventloop_lag_p99_seconds gauge');
+    expect(logged('http.request')).toEqual([]);
+  });
+
   it('reports no migrations to apply on an up-to-date database', async () => {
     await expect(runMigrations()).resolves.toBe(0);
   });

@@ -11,12 +11,15 @@ import {
 import { APP_LOGGER } from '../logging/logger';
 import type { AppLogger } from '../logging/logger';
 import { WideEvent } from '../logging/wide-event';
+import { Metrics } from '../metrics/metrics';
+import { TickDelayTracker } from '../metrics/tick-delay';
 import { generateCrashPoint } from './crash-point';
 import { GameEvent, GameLoop } from './game-loop';
 import { Round } from './round';
 import { ROUNDS_STORE } from './rounds.store';
 import type { RoundsStore } from './rounds.store';
 
+const TICK_MS = 100;
 const CRASH_WRITE_FIRST_RETRY_MS = 100;
 const CRASH_WRITE_MAX_RETRY_MS = 5_000;
 
@@ -31,6 +34,7 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
   private readonly preparedRounds = new Set<string>();
   /** The round log (ADR-0005), emitted once the crash is stored or the app stops. */
   private readonly roundEvents = new Map<string, WideEvent>();
+  private readonly tickDelay = new TickDelayTracker(TICK_MS);
   private stopped = false;
   private bettingEndsAt = 0;
   private startedAt: number | null = null;
@@ -38,8 +42,10 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
   constructor(
     @Inject(ROUNDS_STORE) private readonly rounds: RoundsStore,
     @Inject(APP_LOGGER) private readonly logger: AppLogger,
+    private readonly metrics: Metrics,
   ) {
     this.loop = new GameLoop({
+      tickMs: TICK_MS,
       generateCrashPoint,
       nextRoundId: randomUUID,
       onEvent: event => this.handleEvent(event),
@@ -121,6 +127,8 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
         this.openRoundEvent(event.roundId, event.endsAt);
         return;
       case 'started':
+        // Ticks are measured from now, when the tick timer is armed, not from the planned start.
+        this.tickDelay.start(performance.now());
         // A round starts exactly when its betting ends, also when it is continued after a restart.
         this.bettingEndsAt = event.startedAt;
         this.startedAt = event.startedAt;
@@ -137,8 +145,14 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
           ?.set({ crashPoint: event.crashPoint, crashedAt: iso(event.crashedAt) });
         this.track(this.storeCrash(event.roundId, event.crashedAt));
         return;
-      case 'tick':
+      case 'tick': {
+        // Called synchronously from the tick timer, so this reading is when the tick fired.
+        const delayMs = this.tickDelay.tick(performance.now());
+        if (delayMs !== null) {
+          this.metrics.tickDelay.observe(delayMs / 1000);
+        }
         return;
+      }
     }
   }
 

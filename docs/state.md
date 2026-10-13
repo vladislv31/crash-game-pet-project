@@ -44,7 +44,12 @@
     - errors keep only name, message, code and stack, so query parameters (tokens) never reach the logs
     - `start:dev` pipes through `pino-pretty`, one line per event; routine Nest messages dropped; durations rounded, round times in ISO
     - unit tests 301/301, integration tests 30/30
-  - ADR-0006 metrics (prom-client, Prometheus, Grafana): next, to be discussed
+  - ADR-0006 metrics accepted for the first step; implemented by Claude on request (TDD), awaiting owner review:
+    - prom-client with its own registry (`MetricsModule`), `GET /metrics`
+    - Node default metrics, including event loop lag p50/p90/p99
+    - `crash_tick_delay_seconds`: how late each tick fired, measured in `GameLoopService` (game loop unchanged)
+    - unit tests 313/313, integration tests 31/31
+  - Next: Prometheus + Grafana in docker-compose with provisioning, then the remaining metrics (request latency, broadcast, saturation, reliability)
 
 ## Backlog (before experiments)
 

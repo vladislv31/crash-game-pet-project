@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 
 import { APP_LOGGER } from '../logging/logger';
+import { Metrics } from '../metrics/metrics';
 import { InMemoryStore } from '../testing/in-memory-store';
 import { createTestLogger, LoggedEvent } from '../testing/test-logger';
 import * as crashPoint from './crash-point';
@@ -25,6 +26,7 @@ describe('GameLoopService', () => {
   let service: GameLoopService;
   let logged: (name?: string) => LoggedEvent[];
   let gameEvents: GameEvent[];
+  let metrics: Metrics;
 
   beforeEach(async () => {
     jest.useFakeTimers({ now: 0 });
@@ -39,10 +41,12 @@ describe('GameLoopService', () => {
         GameLoopService,
         { provide: ROUNDS_STORE, useValue: store },
         { provide: APP_LOGGER, useValue: logger },
+        Metrics,
       ],
     }).compile();
     app = moduleRef.createNestApplication({ logger: false });
     service = app.get(GameLoopService);
+    metrics = app.get(Metrics);
     gameEvents = [];
     service.subscribe(event => gameEvents.push(event));
   });
@@ -255,6 +259,48 @@ describe('GameLoopService', () => {
         err: expect.objectContaining({ message: 'broken subscriber' }),
       }),
     ]);
+  });
+
+  describe('tick delay', () => {
+    async function tickDelays(): Promise<{ count: number; sum: number }> {
+      const { values } = await metrics.tickDelay.get();
+      const value = (suffix: string) =>
+        values.find(entry => entry.metricName === `crash_tick_delay_seconds_${suffix}`)?.value;
+      return { count: value('count') ?? 0, sum: value('sum') ?? 0 };
+    }
+
+    it('measures every tick of a round', async () => {
+      await start();
+
+      await jest.advanceTimersByTimeAsync(BETTING_MS + RUNNING_MS);
+
+      const ticks = gameEvents.filter(event => event.type === 'tick').length;
+      expect(ticks).toBeGreaterThan(100);
+      expect(await tickDelays()).toEqual({ count: ticks, sum: 0 });
+    });
+
+    it('records how late a tick fired, in seconds', async () => {
+      const now = performance.now.bind(performance);
+      let lag = 0;
+      jest.spyOn(performance, 'now').mockImplementation(() => now() + lag);
+      await start();
+      await jest.advanceTimersByTimeAsync(BETTING_MS + 100);
+
+      lag = 40;
+      await jest.advanceTimersByTimeAsync(200);
+
+      const { count, sum } = await tickDelays();
+      expect(count).toBe(3);
+      expect(sum).toBeCloseTo(0.04, 6);
+    });
+
+    it('does not measure betting or the pause', async () => {
+      await start();
+
+      await jest.advanceTimersByTimeAsync(BETTING_MS - 1);
+
+      expect(await tickDelays()).toEqual({ count: 0, sum: 0 });
+    });
   });
 
   describe('round log', () => {
