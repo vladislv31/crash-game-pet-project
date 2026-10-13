@@ -14,11 +14,12 @@
 - Crash point generator (`src/game/crash-point.ts`): 1% edge, 10 000x cap, hundredths as `number`
 - Multiplier curve (`src/game/multiplier.ts`): `multiplierAt`, `crashTimeMs` (first whole ms reaching the crash point)
 - Round state machine (`src/game/round.ts`): BETTING → RUNNING → CRASHED (terminal), time passed in, no money
+- Game loop (`src/game/game-loop.ts`): timers, events via `onEvent`, guards against early crash timer and late ticks
 - ADR-0002 game core design accepted (random crash point, not provably fair, 1% edge, k = 0.000107, 15 s / 100 ms / 5 s)
 
 ## In progress
 
-- Game loop (`src/game/game-loop.ts`)
+- Wire game loop into Nest app with logs
 
 ## Next
 
