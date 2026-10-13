@@ -1,6 +1,15 @@
 import type { LoginResponse } from '@crash/contracts';
-import { Body, Controller, HttpCode, Post, UnprocessableEntityException } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  HttpCode,
+  Post,
+  Res,
+  UnprocessableEntityException,
+} from '@nestjs/common';
+import type { Response } from 'express';
 
+import { requestLogOf } from '../logging/request-log.middleware';
 import { AuthService, isValidUsername } from './auth.service';
 
 @Controller('auth')
@@ -9,12 +18,17 @@ export class AuthController {
 
   @Post('login')
   @HttpCode(200)
-  login(@Body() body: { username?: unknown } | undefined): Promise<LoginResponse> {
+  async login(
+    @Body() body: { username?: unknown } | undefined,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<LoginResponse> {
     const username = body?.username;
     if (!isValidUsername(username)) {
       throw new UnprocessableEntityException({ errors: { username: 'invalid' } });
     }
 
-    return this.auth.login(username);
+    const user = await this.auth.login(username);
+    requestLogOf(res)?.set({ userId: user.id });
+    return { token: user.token, username: user.username, balance: user.balance };
   }
 }

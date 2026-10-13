@@ -7,11 +7,13 @@ import { BettingModule } from './betting/betting.module';
 import { appDatabaseOptions } from './database/database-options';
 import { GameModule } from './game/game.module';
 import { GatewayModule } from './gateway/gateway.module';
+import { LoggingModule } from './logging/logging.module';
 import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    LoggingModule,
     // Factory runs after ConfigModule has loaded .env into process.env.
     TypeOrmModule.forRootAsync({ useFactory: () => appDatabaseOptions() }),
     GameModule,

@@ -5,10 +5,12 @@ import {
   BeforeApplicationShutdown,
   Inject,
   Injectable,
-  Logger,
   OnApplicationBootstrap,
 } from '@nestjs/common';
 
+import { APP_LOGGER } from '../logging/logger';
+import type { AppLogger } from '../logging/logger';
+import { WideEvent } from '../logging/wide-event';
 import { generateCrashPoint } from './crash-point';
 import { GameEvent, GameLoop } from './game-loop';
 import { Round } from './round';
@@ -20,17 +22,23 @@ const CRASH_WRITE_MAX_RETRY_MS = 5_000;
 
 @Injectable()
 export class GameLoopService implements OnApplicationBootstrap, BeforeApplicationShutdown {
-  private readonly logger = new Logger('GameLoop');
   private readonly listeners: ((event: GameEvent) => void)[] = [];
   private readonly loop: GameLoop;
   private readonly pendingWrites = new Set<Promise<void>>();
   /** Wakes up retry delays early, so shutdown does not wait for them. */
   private readonly retryWakeups = new Set<() => void>();
+  /** Rounds created by this process; any other round the loop runs was continued after a restart. */
+  private readonly preparedRounds = new Set<string>();
+  /** The round log (ADR-0005), emitted once the crash is stored or the app stops. */
+  private readonly roundEvents = new Map<string, WideEvent>();
   private stopped = false;
   private bettingEndsAt = 0;
   private startedAt: number | null = null;
 
-  constructor(@Inject(ROUNDS_STORE) private readonly rounds: RoundsStore) {
+  constructor(
+    @Inject(ROUNDS_STORE) private readonly rounds: RoundsStore,
+    @Inject(APP_LOGGER) private readonly logger: AppLogger,
+  ) {
     this.loop = new GameLoop({
       generateCrashPoint,
       nextRoundId: randomUUID,
@@ -41,7 +49,7 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
         await Promise.allSettled(this.pendingWrites);
       },
       prepareRound: (round, bettingEndsAt) => this.storeRound(round, bettingEndsAt),
-      onError: error => this.logger.error({ message: 'Failed to store round', error }),
+      onError: error => this.logger.error({ event: 'round.prepare_failed', err: error }),
     });
   }
 
@@ -84,10 +92,15 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
     this.loop.stop();
     this.retryWakeups.forEach(wakeUp => wakeUp());
     await Promise.allSettled(this.pendingWrites);
+
+    for (const event of this.roundEvents.values()) {
+      event.set({ outcome: 'interrupted' });
+      event.emit();
+    }
+    this.roundEvents.clear();
   }
 
   private handleEvent(event: GameEvent): void {
-    this.logger.log(event);
     this.record(event);
 
     // A failing subscriber must not stop the game loop or the other subscribers.
@@ -95,7 +108,7 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
       try {
         listener(event);
       } catch (error) {
-        this.logger.error({ message: 'Game event subscriber failed', event: event.type, error });
+        this.logger.error({ event: 'game.subscriber_failed', type: event.type, err: error });
       }
     }
   }
@@ -105,17 +118,24 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
       case 'betting':
         this.bettingEndsAt = event.endsAt;
         this.startedAt = null;
+        this.openRoundEvent(event.roundId, event.endsAt);
         return;
       case 'started':
         // A round starts exactly when its betting ends, also when it is continued after a restart.
         this.bettingEndsAt = event.startedAt;
         this.startedAt = event.startedAt;
-        this.persist(this.rounds.markStarted(event.roundId, event.startedAt));
+        (
+          this.roundEvents.get(event.roundId) ?? this.openRoundEvent(event.roundId, event.startedAt)
+        ).set({ startedAt: iso(event.startedAt) });
+        this.persist(event.roundId, 'markStarted', () =>
+          this.rounds.markStarted(event.roundId, event.startedAt),
+        );
         return;
       case 'crashed':
-        this.track(
-          this.retryUntilStored(() => this.rounds.markCrashed(event.roundId, event.crashedAt)),
-        );
+        this.roundEvents
+          .get(event.roundId)
+          ?.set({ crashPoint: event.crashPoint, crashedAt: iso(event.crashedAt) });
+        this.track(this.storeCrash(event.roundId, event.crashedAt));
         return;
       case 'tick':
         return;
@@ -127,33 +147,68 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
     const write = this.rounds.create({ id: round.id, crashPoint: round.crashPoint, bettingEndsAt });
     this.track(write);
     await write;
+    this.preparedRounds.add(round.id);
   }
 
-  private persist(write: Promise<void>): void {
+  private openRoundEvent(roundId: string, bettingEndsAt: number): WideEvent {
+    const event = new WideEvent(this.logger, 'round', {
+      roundId,
+      bettingEndsAt: iso(bettingEndsAt),
+      continuedAfterRestart: !this.preparedRounds.delete(roundId),
+    });
+    this.roundEvents.set(roundId, event);
+    return event;
+  }
+
+  private persist(roundId: string, operation: string, write: () => Promise<void>): void {
     this.track(
-      write.catch((error: unknown) =>
-        this.logger.error({ message: 'Failed to store round', error }),
+      write().catch((error: unknown) =>
+        this.logger.error({ event: 'round.store_failed', roundId, operation, err: error }),
       ),
     );
   }
 
+  private async storeCrash(roundId: string, crashedAt: number): Promise<void> {
+    const { stored, retries } = await this.retryUntilStored(roundId, () =>
+      this.rounds.markCrashed(roundId, crashedAt),
+    );
+
+    const event = this.roundEvents.get(roundId);
+    this.roundEvents.delete(roundId);
+    if (!event) {
+      return;
+    }
+    event.set({ crashWriteRetries: retries, outcome: stored ? 'crashed' : 'crash_not_stored' });
+    if (!stored) {
+      event.fail();
+    }
+    event.emit();
+  }
+
   /** The write is idempotent, so it is safe to repeat until it lands or the app stops. */
-  private async retryUntilStored(write: () => Promise<void>): Promise<void> {
+  private async retryUntilStored(
+    roundId: string,
+    write: () => Promise<void>,
+  ): Promise<{ stored: boolean; retries: number }> {
     let delay = CRASH_WRITE_FIRST_RETRY_MS;
+    let retries = 0;
     while (!this.stopped) {
       try {
         await write();
-        return;
+        return { stored: true, retries };
       } catch (error) {
         this.logger.error({
-          message: 'Failed to store round crash, retrying',
+          event: 'round.crash_write_failed',
+          roundId,
           retryInMs: delay,
-          error,
+          err: error,
         });
+        retries += 1;
         await this.sleep(delay);
         delay = Math.min(delay * 2, CRASH_WRITE_MAX_RETRY_MS);
       }
     }
+    return { stored: false, retries };
   }
 
   private sleep(ms: number): Promise<void> {
@@ -172,4 +227,8 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
     const settled = write.catch(() => undefined).finally(() => this.pendingWrites.delete(settled));
     this.pendingWrites.add(settled);
   }
+}
+
+function iso(time: number): string {
+  return new Date(time).toISOString();
 }

@@ -1,6 +1,6 @@
 # Development state
 
-**Current phase:** 2 — WebSocket protocol + money (implemented, awaiting owner review)
+**Current phase:** 3 — Observability (logging implemented, metrics next)
 **Last updated:** 2026-10-13
 
 ## Done
@@ -37,16 +37,22 @@
 
 - Owner: `npm run test:e2e -w game-server` (initial migration is generated and applied) → review → run server + web
 - Phase 3: observability
+  - ADR-0005 structured logging accepted; implemented by Claude on request (TDD), awaiting owner review:
+    - `src/logging`: pino logger (`APP_LOGGER`), `WideEvent`, Nest logger adapter, `http.request` middleware
+    - wide events: `ws.message`, `ws.connection`, `http.request`, `round`, `auto_cashout`, `settlement`, `startup`, `shutdown`; per-tick logs removed
+    - `BettingService` returns `replayed` and exposes `inFlightCount`; `AuthService.login` returns the user
+    - errors keep only name, message, code and stack, so query parameters (tokens) never reach the logs
+    - `start:dev` pipes through `pino-pretty`, one line per event; routine Nest messages dropped; durations rounded, round times in ISO
+    - unit tests 301/301, integration tests 30/30
+  - ADR-0006 metrics (prom-client, Prometheus, Grafana): next, to be discussed
 
 ## Backlog (before experiments)
 
 - WebSocket hardening: `maxPayload`, per-socket message rate limit, ignore messages before auth, ping/pong to drop dead connections
 - Rate limit `POST /auth/login` (every new username creates a user)
-- Do not log raw errors that carry query parameters (token in `findByToken` failures)
 - Partial index on `bets` for `status = 'ACTIVE'` (settlement sweep scans the table)
 - Reconciliation check: `users.balance` equals the sum of `ledger_entries` per user
 - End-to-end WebSocket test through the real app (login → bet → cashout)
-- Structured JSON wide-event logs per request (global CLAUDE.md), with Phase 3
 - CI: lint, unit tests, integration tests with PostgreSQL
 
 ## Open questions

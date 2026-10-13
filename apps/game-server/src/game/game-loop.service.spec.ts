@@ -1,7 +1,9 @@
-import { INestApplication, Logger } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 
+import { APP_LOGGER } from '../logging/logger';
 import { InMemoryStore } from '../testing/in-memory-store';
+import { createTestLogger, LoggedEvent } from '../testing/test-logger';
 import * as crashPoint from './crash-point';
 import { GameEvent } from './game-loop';
 import { GameLoopService } from './game-loop.service';
@@ -10,25 +12,39 @@ import { ROUNDS_STORE } from './rounds.store';
 const BETTING_MS = 15_000;
 // Longest possible round: crashTimeMs(MAX_CRASH_POINT)
 const MAX_RUNNING_MS = 86_078;
+// crashTimeMs(500): the fixed crash point used by these tests
+const RUNNING_MS = 15_042;
+
+function iso(time: number): string {
+  return new Date(time).toISOString();
+}
 
 describe('GameLoopService', () => {
-  let logSpy: jest.SpyInstance;
   let store: InMemoryStore;
   let app: INestApplication;
   let service: GameLoopService;
+  let logged: (name?: string) => LoggedEvent[];
+  let gameEvents: GameEvent[];
 
   beforeEach(async () => {
     jest.useFakeTimers({ now: 0 });
-    logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
     // A fixed crash point keeps the tests deterministic: a random 1.00x would crash at the start.
     jest.spyOn(crashPoint, 'generateCrashPoint').mockReturnValue(500);
     store = new InMemoryStore();
+    const { logger, events } = createTestLogger();
+    logged = events;
 
     const moduleRef = await Test.createTestingModule({
-      providers: [GameLoopService, { provide: ROUNDS_STORE, useValue: store }],
+      providers: [
+        GameLoopService,
+        { provide: ROUNDS_STORE, useValue: store },
+        { provide: APP_LOGGER, useValue: logger },
+      ],
     }).compile();
     app = moduleRef.createNestApplication({ logger: false });
     service = app.get(GameLoopService);
+    gameEvents = [];
+    service.subscribe(event => gameEvents.push(event));
   });
 
   afterEach(async () => {
@@ -43,39 +59,24 @@ describe('GameLoopService', () => {
     await jest.advanceTimersByTimeAsync(0);
   }
 
-  // Nest logs its own string messages through the same Logger; keep only game events.
-  function loggedEventTypes(): unknown[] {
-    return logSpy.mock.calls
-      .map(([message]: unknown[]) => message)
-      .filter(
-        (message): message is { type: unknown } =>
-          typeof message === 'object' && message !== null && 'type' in message,
-      )
-      .map(message => message.type);
+  function gameEventTypes(): string[] {
+    return gameEvents.map(event => event.type);
   }
 
-  it('starts the game loop when the app starts and logs the betting phase', async () => {
+  it('starts the game loop when the app starts', async () => {
     await start();
 
-    expect(loggedEventTypes()).toEqual(['betting']);
-  });
-
-  it('logs the round lifecycle', async () => {
-    await start();
-
-    jest.advanceTimersByTime(BETTING_MS + MAX_RUNNING_MS);
-
-    expect(loggedEventTypes()).toEqual(expect.arrayContaining(['betting', 'started', 'crashed']));
+    expect(gameEventTypes()).toEqual(['betting']);
   });
 
   it('stops the game loop when the app shuts down', async () => {
     await start();
     await app.close();
-    const callsAfterClose = logSpy.mock.calls.length;
+    const eventsAfterClose = gameEvents.length;
 
     jest.advanceTimersByTime(60_000);
 
-    expect(logSpy.mock.calls).toHaveLength(callsAfterClose);
+    expect(gameEvents).toHaveLength(eventsAfterClose);
   });
 
   it('finishes pending round writes before the app shuts down', async () => {
@@ -106,28 +107,30 @@ describe('GameLoopService', () => {
     await start();
 
     expect(service.currentRoundView()).toBeNull();
-    expect(loggedEventTypes()).toEqual([]);
+    expect(gameEventTypes()).toEqual([]);
 
     finishWrite();
     await jest.advanceTimersByTimeAsync(0);
 
-    expect(loggedEventTypes()).toEqual(['betting']);
+    expect(gameEventTypes()).toEqual(['betting']);
   });
 
   it('logs a failed round write and tries a new round after the pause', async () => {
-    const errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     jest.spyOn(store, 'create').mockRejectedValueOnce(new Error('database down'));
 
     await start();
 
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ message: 'Failed to store round' }),
-    );
-    expect(loggedEventTypes()).toEqual([]);
+    expect(logged('round.prepare_failed')).toEqual([
+      expect.objectContaining({
+        level: 'error',
+        err: expect.objectContaining({ message: 'database down' }),
+      }),
+    ]);
+    expect(gameEventTypes()).toEqual([]);
 
     await jest.advanceTimersByTimeAsync(5_000);
 
-    expect(loggedEventTypes()).toEqual(['betting']);
+    expect(gameEventTypes()).toEqual(['betting']);
   });
 
   it('continues the last stored round after a restart', async () => {
@@ -184,7 +187,6 @@ describe('GameLoopService', () => {
   });
 
   it('keeps retrying a failed crash write and opens the next round only after it is stored', async () => {
-    const errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     let databaseDown = true;
     const markCrashed = store.markCrashed.bind(store);
     jest
@@ -199,7 +201,7 @@ describe('GameLoopService', () => {
 
     expect(store.rounds.size).toBe(1);
     expect(store.rounds.get(firstRoundId)?.crashedAt).toBeNull();
-    expect(errorSpy.mock.calls.length).toBeGreaterThan(1);
+    expect(logged('round.crash_write_failed').length).toBeGreaterThan(1);
 
     databaseDown = false;
     await jest.advanceTimersByTimeAsync(5_000);
@@ -209,7 +211,6 @@ describe('GameLoopService', () => {
   });
 
   it('stops retrying the crash write when the app shuts down', async () => {
-    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     jest.spyOn(store, 'markCrashed').mockRejectedValue(new Error('database down'));
     await start();
     await jest.advanceTimersByTimeAsync(BETTING_MS + MAX_RUNNING_MS);
@@ -221,15 +222,11 @@ describe('GameLoopService', () => {
   });
 
   it('passes every game event to subscribers', async () => {
-    const events: GameEvent[] = [];
-    service.subscribe(event => events.push(event));
     await start();
 
     jest.advanceTimersByTime(BETTING_MS + MAX_RUNNING_MS);
 
-    expect(events.map(event => event.type)).toEqual(
-      expect.arrayContaining(['betting', 'started', 'crashed']),
-    );
+    expect(gameEventTypes()).toEqual(expect.arrayContaining(['betting', 'started', 'crashed']));
   });
 
   it('keeps notifying other subscribers when one of them throws', async () => {
@@ -242,6 +239,171 @@ describe('GameLoopService', () => {
     await start();
 
     expect(events.map(event => event.type)).toEqual(['betting']);
+  });
+
+  it('logs a subscriber that throws', async () => {
+    service.subscribe(() => {
+      throw new Error('broken subscriber');
+    });
+
+    await start();
+
+    expect(logged('game.subscriber_failed')).toEqual([
+      expect.objectContaining({
+        level: 'error',
+        type: 'betting',
+        err: expect.objectContaining({ message: 'broken subscriber' }),
+      }),
+    ]);
+  });
+
+  describe('round log', () => {
+    it('logs one event per round once its crash is stored', async () => {
+      await start();
+      const roundId = service.currentRound!.id;
+
+      await jest.advanceTimersByTimeAsync(BETTING_MS + RUNNING_MS);
+
+      expect(logged('round')).toEqual([
+        expect.objectContaining({
+          level: 'info',
+          roundId,
+          crashPoint: 500,
+          bettingEndsAt: iso(BETTING_MS),
+          startedAt: iso(BETTING_MS),
+          crashedAt: iso(BETTING_MS + RUNNING_MS),
+          continuedAfterRestart: false,
+          crashWriteRetries: 0,
+          outcome: 'crashed',
+          durationMs: expect.any(Number),
+        }),
+      ]);
+    });
+
+    it('logs nothing else during a round: no phases, no ticks', async () => {
+      await start();
+
+      await jest.advanceTimersByTimeAsync(BETTING_MS + RUNNING_MS);
+
+      expect(logged().map(event => event.event)).toEqual(['round']);
+    });
+
+    it('waits for the crash write before logging the round', async () => {
+      let finishCrashWrite = () => undefined as void;
+      jest
+        .spyOn(store, 'markCrashed')
+        .mockImplementationOnce(() => new Promise<void>(resolve => (finishCrashWrite = resolve)));
+      await start();
+
+      await jest.advanceTimersByTimeAsync(BETTING_MS + RUNNING_MS);
+      expect(logged('round')).toEqual([]);
+
+      finishCrashWrite();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(logged('round')).toHaveLength(1);
+    });
+
+    it('counts failed crash writes and logs each of them', async () => {
+      const markCrashed = store.markCrashed.bind(store);
+      jest
+        .spyOn(store, 'markCrashed')
+        .mockRejectedValueOnce(new Error('database down'))
+        .mockRejectedValueOnce(new Error('database down'))
+        .mockImplementation(markCrashed);
+      await start();
+      const roundId = service.currentRound!.id;
+
+      await jest.advanceTimersByTimeAsync(BETTING_MS + RUNNING_MS + 1_000);
+
+      expect(logged('round.crash_write_failed')).toEqual([
+        expect.objectContaining({ level: 'error', roundId, retryInMs: 100 }),
+        expect.objectContaining({ level: 'error', roundId, retryInMs: 200 }),
+      ]);
+      expect(logged('round')).toEqual([
+        expect.objectContaining({ roundId, crashWriteRetries: 2, outcome: 'crashed' }),
+      ]);
+    });
+
+    it('logs a round whose crash was not stored before shutdown as an error', async () => {
+      jest.spyOn(store, 'markCrashed').mockRejectedValue(new Error('database down'));
+      await start();
+      const roundId = service.currentRound!.id;
+      await jest.advanceTimersByTimeAsync(BETTING_MS + RUNNING_MS);
+
+      const closing = app.close();
+      await jest.advanceTimersByTimeAsync(0);
+      await closing;
+
+      expect(logged('round')).toEqual([
+        expect.objectContaining({ level: 'error', roundId, outcome: 'crash_not_stored' }),
+      ]);
+    });
+
+    it('logs a round interrupted by shutdown', async () => {
+      await start();
+      const roundId = service.currentRound!.id;
+      await jest.advanceTimersByTimeAsync(BETTING_MS + 1_000);
+
+      await app.close();
+
+      const [round] = logged('round');
+      expect(round).toMatchObject({
+        level: 'info',
+        roundId,
+        startedAt: iso(BETTING_MS),
+        outcome: 'interrupted',
+      });
+      expect(round).not.toHaveProperty('crashedAt');
+    });
+
+    it('marks a round continued in betting after a restart', async () => {
+      await store.create({ id: 'stored', crashPoint: 300, bettingEndsAt: 4_000 });
+      await start();
+
+      await app.close();
+
+      expect(logged('round')).toEqual([
+        expect.objectContaining({
+          roundId: 'stored',
+          bettingEndsAt: iso(4_000),
+          continuedAfterRestart: true,
+        }),
+      ]);
+    });
+
+    it('marks a round continued in flight after a restart', async () => {
+      jest.setSystemTime(50_000);
+      await store.create({ id: 'stored', crashPoint: 500, bettingEndsAt: 48_000 });
+      await start();
+
+      await app.close();
+
+      expect(logged('round')).toEqual([
+        expect.objectContaining({
+          roundId: 'stored',
+          bettingEndsAt: iso(48_000),
+          startedAt: iso(48_000),
+          continuedAfterRestart: true,
+        }),
+      ]);
+    });
+
+    it('logs a failed write of the round start', async () => {
+      jest.spyOn(store, 'markStarted').mockRejectedValueOnce(new Error('database down'));
+      await start();
+      const roundId = service.currentRound!.id;
+
+      await jest.advanceTimersByTimeAsync(BETTING_MS);
+
+      expect(logged('round.store_failed')).toEqual([
+        expect.objectContaining({
+          level: 'error',
+          roundId,
+          operation: 'markStarted',
+          err: expect.objectContaining({ message: 'database down' }),
+        }),
+      ]);
+    });
   });
 
   it('stores the crash point when betting opens', async () => {

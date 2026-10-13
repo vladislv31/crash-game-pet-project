@@ -1,13 +1,17 @@
+import { randomUUID } from 'node:crypto';
 import { IncomingMessage } from 'node:http';
 
 import type { RoundView, ServerMessage } from '@crash/contracts';
-import { BeforeApplicationShutdown, Inject, Logger, OnModuleInit } from '@nestjs/common';
+import { BeforeApplicationShutdown, Inject, OnModuleInit } from '@nestjs/common';
 import { OnGatewayConnection, OnGatewayDisconnect, WebSocketGateway } from '@nestjs/websockets';
 import { RawData, WebSocket } from 'ws';
 
 import { BettingError } from '../betting/betting.errors';
 import { BettingEvent, BettingService, GameSource } from '../betting/betting.service';
 import { GameLoopService } from '../game/game-loop.service';
+import { APP_LOGGER } from '../logging/logger';
+import type { AppLogger } from '../logging/logger';
+import { WideEvent } from '../logging/wide-event';
 import { AuthService } from '../users/auth.service';
 import { User } from '../users/user';
 import { ParsedClientMessage, parseClientMessage, toBetView, toRoundMessage } from './messages';
@@ -23,7 +27,13 @@ export interface GatewayGame extends GameSource {
 
 interface Session {
   user: User | null;
+  connectionId: string;
+  messagesReceived: number;
+  /** The connection log (ADR-0005), emitted when the socket closes. */
+  log: WideEvent;
 }
+
+type ErrorMessage = Extract<ServerMessage, { type: 'error' }>;
 
 /** WebSocket protocol from ADR-0003. Broadcasts one message per event, without batching. */
 @WebSocketGateway({ path: '/ws' })
@@ -34,7 +44,6 @@ export class GameGateway
     OnModuleInit,
     BeforeApplicationShutdown
 {
-  private readonly logger = new Logger(GameGateway.name);
   private readonly sessions = new Map<WebSocket, Session>();
   private shuttingDown = false;
 
@@ -42,6 +51,7 @@ export class GameGateway
     private readonly auth: AuthService,
     private readonly betting: BettingService,
     @Inject(GameLoopService) private readonly game: GatewayGame,
+    @Inject(APP_LOGGER) private readonly logger: AppLogger,
   ) {}
 
   onModuleInit(): void {
@@ -55,28 +65,60 @@ export class GameGateway
    */
   async beforeApplicationShutdown(): Promise<void> {
     this.shuttingDown = true;
-    // The loop goes first, so no tick or settlement starts new money operations while draining.
-    await this.game.stop();
-    await this.betting.drain();
+    const log = new WideEvent(this.logger, 'shutdown', {
+      moneyOpsInFlight: this.betting.inFlightCount,
+    });
+    try {
+      // The loop goes first, so no tick or settlement starts new money operations while draining.
+      await this.game.stop();
+      await this.betting.drain();
 
-    for (const client of this.sessions.keys()) {
-      client.close(RESTART_CLOSE_CODE, 'restarting');
+      const clients = [...this.sessions.keys()];
+      for (const client of clients) {
+        client.close(RESTART_CLOSE_CODE, 'restarting');
+      }
+      this.sessions.clear();
+      log.set({ socketsClosed: clients.length });
+    } catch (error) {
+      log.fail(error);
+      throw error;
+    } finally {
+      log.emit();
     }
-    this.sessions.clear();
   }
 
   handleConnection(client: WebSocket, request: IncomingMessage): void {
+    const connectionId = randomUUID();
+    const session: Session = {
+      user: null,
+      connectionId,
+      messagesReceived: 0,
+      log: new WideEvent(this.logger, 'ws.connection', { connectionId, authOutcome: 'pending' }),
+    };
+    client.on('close', (code: number) => {
+      session.log.set({ closeCode: code, messagesReceived: session.messagesReceived });
+      session.log.emit();
+    });
+
     if (this.shuttingDown) {
+      session.log.set({ authOutcome: 'shutting_down' });
       client.close(RESTART_CLOSE_CODE, 'restarting');
       return;
     }
 
-    const session: Session = { user: null };
     this.sessions.set(client, session);
     client.on('message', (data: RawData) => {
       // Taken before any async work: the receipt time decides the cashout multiplier.
       const receivedAt = Date.now();
-      void this.handleMessage(client, session, data, receivedAt);
+      session.messagesReceived += 1;
+      const round = this.game.currentRound;
+      const log = new WideEvent(this.logger, 'ws.message', {
+        requestId: randomUUID(),
+        connectionId,
+        ...(session.user ? { userId: session.user.id } : {}),
+        ...(round ? { roundId: round.id, roundPhase: round.phase } : {}),
+      });
+      void this.handleMessage(client, session, data, receivedAt, log);
     });
 
     void this.authenticate(client, session, tokenFrom(request));
@@ -94,6 +136,7 @@ export class GameGateway
     try {
       const user = token ? await this.auth.authenticate(token) : null;
       if (!user) {
+        session.log.set({ authOutcome: 'unauthorized' });
         this.sessions.delete(client);
         client.close(UNAUTHORIZED_CLOSE_CODE, 'unauthorized');
         return;
@@ -102,6 +145,7 @@ export class GameGateway
       const round = this.game.currentRoundView();
       const bet = round ? await this.betting.findUserBet(user.id, round.id) : null;
       session.user = user;
+      session.log.set({ authOutcome: 'ok', userId: user.id });
       this.send(client, {
         type: 'snapshot',
         serverTime: Date.now(),
@@ -111,7 +155,8 @@ export class GameGateway
         bet: bet ? toBetView(bet) : null,
       });
     } catch (error) {
-      this.logger.error({ message: 'Failed to authenticate socket', error });
+      session.log.set({ authOutcome: 'error' });
+      session.log.fail(error);
       this.sessions.delete(client);
       client.close(UNAUTHORIZED_CLOSE_CODE, 'unauthorized');
     }
@@ -122,10 +167,28 @@ export class GameGateway
     session: Session,
     data: RawData,
     receivedAt: number,
-  ) {
+    log: WideEvent,
+  ): Promise<void> {
+    try {
+      await this.respond(client, session, data, receivedAt, log);
+    } finally {
+      log.emit();
+    }
+  }
+
+  private async respond(
+    client: WebSocket,
+    session: Session,
+    data: RawData,
+    receivedAt: number,
+    log: WideEvent,
+  ): Promise<void> {
     const parsed = parseClientMessage(data);
     if (!parsed.ok) {
-      this.send(client, {
+      if (parsed.requestId) {
+        log.set({ clientRequestId: parsed.requestId });
+      }
+      this.sendError(client, log, {
         type: 'error',
         code: 'invalid_message',
         ...(parsed.requestId ? { requestId: parsed.requestId } : {}),
@@ -134,21 +197,30 @@ export class GameGateway
     }
 
     const { message } = parsed;
+    log.set({ type: message.type, clientRequestId: message.requestId });
     if (this.shuttingDown) {
-      this.send(client, { type: 'error', requestId: message.requestId, code: 'unavailable' });
+      this.sendError(client, log, {
+        type: 'error',
+        requestId: message.requestId,
+        code: 'unavailable',
+      });
       return;
     }
 
     if (!session.user) {
-      this.send(client, { type: 'error', requestId: message.requestId, code: 'unauthorized' });
+      this.sendError(client, log, {
+        type: 'error',
+        requestId: message.requestId,
+        code: 'unauthorized',
+      });
       return;
     }
 
     try {
-      this.send(client, await this.execute(session.user, message, receivedAt));
+      this.send(client, await this.execute(session.user, message, receivedAt, log));
     } catch (error) {
       if (error instanceof BettingError) {
-        this.send(client, {
+        this.sendError(client, log, {
           type: 'error',
           requestId: message.requestId,
           code: error.code,
@@ -157,8 +229,12 @@ export class GameGateway
         return;
       }
 
-      this.logger.error({ message: 'Failed to handle client message', type: message.type, error });
-      this.send(client, { type: 'error', requestId: message.requestId, code: 'internal_error' });
+      log.fail(error);
+      this.sendError(client, log, {
+        type: 'error',
+        requestId: message.requestId,
+        code: 'internal_error',
+      });
     }
   }
 
@@ -166,9 +242,17 @@ export class GameGateway
     user: User,
     message: ParsedClientMessage,
     receivedAt: number,
+    log: WideEvent,
   ): Promise<ServerMessage> {
     if (message.type === 'cashout') {
-      const { bet, balance } = await this.betting.cashOut(user, receivedAt);
+      const { bet, balance, replayed } = await this.betting.cashOut(user, receivedAt);
+      log.set({
+        betId: bet.id,
+        amount: bet.amount,
+        multiplier: bet.cashoutMultiplier,
+        payout: bet.payout,
+        outcome: replayed ? 'replayed' : 'accepted',
+      });
       return {
         type: 'cashout:accepted',
         requestId: message.requestId,
@@ -177,8 +261,19 @@ export class GameGateway
       };
     }
 
-    const { bet, balance } = await this.betting.placeBet(user, message);
+    const { bet, balance, replayed } = await this.betting.placeBet(user, message);
+    log.set({
+      betId: bet.id,
+      amount: bet.amount,
+      autoCashout: bet.autoCashout,
+      outcome: replayed ? 'replayed' : 'accepted',
+    });
     return { type: 'bet:accepted', requestId: message.requestId, bet: toBetView(bet), balance };
+  }
+
+  private sendError(client: WebSocket, log: WideEvent, message: ErrorMessage): void {
+    log.set({ outcome: message.code });
+    this.send(client, message);
   }
 
   private handleBettingEvent(event: BettingEvent): void {

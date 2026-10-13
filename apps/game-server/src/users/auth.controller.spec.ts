@@ -3,7 +3,10 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { App } from 'supertest/types';
 
+import { APP_LOGGER } from '../logging/logger';
+import { LoggingModule } from '../logging/logging.module';
 import { InMemoryStore } from '../testing/in-memory-store';
+import { createTestLogger, LoggedEvent } from '../testing/test-logger';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { USERS_STORE } from './users.store';
@@ -11,13 +14,20 @@ import { USERS_STORE } from './users.store';
 describe('AuthController', () => {
   let app: INestApplication<App>;
   let store: InMemoryStore;
+  let logged: (name?: string) => LoggedEvent[];
 
   beforeEach(async () => {
     store = new InMemoryStore();
+    const { logger, events } = createTestLogger();
+    logged = events;
     const moduleRef = await Test.createTestingModule({
+      imports: [LoggingModule],
       controllers: [AuthController],
       providers: [AuthService, { provide: USERS_STORE, useValue: store }],
-    }).compile();
+    })
+      .overrideProvider(APP_LOGGER)
+      .useValue(logger)
+      .compile();
     app = moduleRef.createNestApplication({ logger: false });
     await app.init();
   });
@@ -70,6 +80,23 @@ describe('AuthController', () => {
 
     expect(response.status).toBe(422);
     expect(response.body).toEqual({ errors: { username: 'invalid' } });
+  });
+
+  it('logs the login with the player id and without the token', async () => {
+    const response = await login({ username: 'alice' });
+
+    const [user] = store.users.values();
+    expect(logged('http.request')).toEqual([
+      expect.objectContaining({ route: '/auth/login', statusCode: 200, userId: user!.id }),
+    ]);
+    expect(JSON.stringify(logged())).not.toContain(response.body.token);
+  });
+
+  it('logs a rejected login without a player id', async () => {
+    await login({ username: 'ab' });
+
+    expect(logged('http.request')[0]).toMatchObject({ statusCode: 422 });
+    expect(logged('http.request')[0]).not.toHaveProperty('userId');
   });
 
   it.each([['abc'], ['a'.repeat(20)]])(

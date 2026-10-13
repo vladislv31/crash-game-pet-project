@@ -1,6 +1,5 @@
 import { randomBytes } from 'node:crypto';
 
-import type { LoginResponse } from '@crash/contracts';
 import { Inject, Injectable } from '@nestjs/common';
 
 import { INITIAL_BALANCE } from '../betting/bet-rules';
@@ -19,11 +18,9 @@ export function isValidUsername(input: unknown): input is string {
 export class AuthService {
   constructor(@Inject(USERS_STORE) private readonly users: UsersStore) {}
 
-  async login(username: string): Promise<LoginResponse> {
+  login(username: string): Promise<User> {
     const token = randomBytes(32).toString('hex');
-    const user = await this.users.findOrCreate(username, INITIAL_BALANCE, token);
-
-    return { token: user.token, username: user.username, balance: user.balance };
+    return this.users.findOrCreate(username, INITIAL_BALANCE, token);
   }
 
   authenticate(token: string): Promise<User | null> {

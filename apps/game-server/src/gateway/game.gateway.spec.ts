@@ -2,7 +2,6 @@ import { EventEmitter } from 'node:events';
 import { IncomingMessage } from 'node:http';
 
 import type { ServerMessage } from '@crash/contracts';
-import { Logger } from '@nestjs/common';
 import { WebSocket } from 'ws';
 
 import { BettingService } from '../betting/betting.service';
@@ -10,6 +9,7 @@ import { GameEvent } from '../game/game-loop';
 import { crashTimeMs } from '../game/multiplier';
 import { Round } from '../game/round';
 import { InMemoryStore } from '../testing/in-memory-store';
+import { createTestLogger } from '../testing/test-logger';
 import { AuthService } from '../users/auth.service';
 import { GameGateway, GatewayGame } from './game.gateway';
 
@@ -26,7 +26,13 @@ class FakeSocket extends EventEmitter {
 
   close(code: number): void {
     this.closeCode = code;
+    this.disconnect(code);
+  }
+
+  /** The connection ends, as `ws` reports it with the close code. */
+  disconnect(code: number): void {
     this.readyState = WebSocket.CLOSED;
+    this.emit('close', code);
   }
 
   receive(message: unknown): void {
@@ -62,8 +68,9 @@ function setup(crashPoint = 500) {
       startedAt: round.phase === 'BETTING' ? null : STARTED_AT,
     }),
   };
-  const betting = new BettingService(store, game);
-  const gateway = new GameGateway(auth, betting, game);
+  const { logger, events: logged } = createTestLogger();
+  const betting = new BettingService(store, game, logger);
+  const gateway = new GameGateway(auth, betting, game, logger);
   betting.onModuleInit();
   gateway.onModuleInit();
 
@@ -85,18 +92,30 @@ function setup(crashPoint = 500) {
     return socket;
   }
 
-  return { store, round, game, gateway, betting, emitGameEvent, connect };
+  function userIdOf(username: string): string {
+    const user = [...store.users.values()].find(candidate => candidate.username === username);
+    if (!user) {
+      throw new Error(`No user ${username} in test setup`);
+    }
+    return user.id;
+  }
+
+  return {
+    store,
+    round,
+    game,
+    gateway,
+    auth,
+    betting,
+    logged,
+    emitGameEvent,
+    connect,
+    userIdOf,
+  };
 }
 
 describe('GameGateway', () => {
-  let errorSpy: jest.SpyInstance;
-
-  beforeEach(() => {
-    errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
-  });
-
   afterEach(() => {
-    errorSpy.mockRestore();
     jest.restoreAllMocks();
   });
 
@@ -255,6 +274,256 @@ describe('GameGateway', () => {
       await flush();
 
       expect(socket.last()).toEqual({ type: 'error', requestId: 'r1', code: 'cashout_closed' });
+    });
+  });
+
+  describe('message log', () => {
+    it('logs an accepted bet with its business fields', async () => {
+      const { connect, logged, userIdOf } = setup();
+      const socket = await connect('alice');
+
+      socket.receive({ type: 'bet', requestId: 'r1', amount: '100', autoCashout: 200 });
+      await flush();
+
+      const bet = socket.sent.find(message => message.type === 'bet:accepted');
+      expect(logged('ws.message')).toEqual([
+        expect.objectContaining({
+          level: 'info',
+          requestId: expect.any(String),
+          clientRequestId: 'r1',
+          connectionId: expect.any(String),
+          userId: userIdOf('alice'),
+          type: 'bet',
+          roundId: 'round-1',
+          roundPhase: 'BETTING',
+          betId: bet?.type === 'bet:accepted' ? bet.bet.id : 'missing',
+          amount: '100',
+          autoCashout: 200,
+          outcome: 'accepted',
+          durationMs: expect.any(Number),
+        }),
+      ]);
+    });
+
+    it('logs a retried bet as replayed, under a new request id', async () => {
+      const { connect, logged } = setup();
+      const socket = await connect();
+
+      socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+      await flush();
+      socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+      await flush();
+
+      const [first, retry] = logged('ws.message');
+      expect([first?.outcome, retry?.outcome]).toEqual(['accepted', 'replayed']);
+      expect(retry?.clientRequestId).toBe('r1');
+      expect(retry?.requestId).not.toBe(first?.requestId);
+    });
+
+    it('logs a cashout with its multiplier and payout, in the phase it arrived', async () => {
+      const { connect, round, logged } = setup(500);
+      const socket = await connect();
+      socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+      await flush();
+      round.start(STARTED_AT);
+
+      jest.spyOn(Date, 'now').mockReturnValue(STARTED_AT + crashTimeMs(150));
+      socket.receive({ type: 'cashout', requestId: 'r2' });
+      await flush();
+
+      expect(logged('ws.message')[1]).toMatchObject({
+        type: 'cashout',
+        clientRequestId: 'r2',
+        roundPhase: 'RUNNING',
+        betId: expect.any(String),
+        multiplier: 150,
+        payout: '150',
+        outcome: 'accepted',
+      });
+    });
+
+    it('logs a repeated cashout as replayed', async () => {
+      const { connect, round, logged } = setup(500);
+      const socket = await connect();
+      socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+      await flush();
+      round.start(STARTED_AT);
+      jest.spyOn(Date, 'now').mockReturnValue(STARTED_AT + crashTimeMs(150));
+
+      socket.receive({ type: 'cashout', requestId: 'r2' });
+      await flush();
+      socket.receive({ type: 'cashout', requestId: 'r2' });
+      await flush();
+
+      expect(logged('ws.message').map(event => event.outcome)).toEqual([
+        'accepted',
+        'accepted',
+        'replayed',
+      ]);
+    });
+
+    it('logs a business error with its code as the outcome', async () => {
+      const { connect, logged } = setup();
+      const socket = await connect();
+
+      socket.receive({ type: 'cashout', requestId: 'r1' });
+      await flush();
+
+      expect(logged('ws.message')).toEqual([
+        expect.objectContaining({ level: 'info', type: 'cashout', outcome: 'cashout_closed' }),
+      ]);
+    });
+
+    it('logs an invalid message', async () => {
+      const { connect, logged } = setup();
+      const socket = await connect();
+
+      socket.receive({ type: 'dance', requestId: 'r1' });
+      await flush();
+
+      expect(logged('ws.message')).toEqual([
+        expect.objectContaining({ clientRequestId: 'r1', outcome: 'invalid_message' }),
+      ]);
+    });
+
+    it('logs a message sent before the snapshot', async () => {
+      const { gateway, store, logged } = setup();
+      await store.findOrCreate('alice', '5000', 'token-alice');
+      const socket = new FakeSocket();
+      gateway.handleConnection(
+        socket as unknown as WebSocket,
+        {
+          url: '/ws?token=token-alice',
+        } as IncomingMessage,
+      );
+
+      socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+      await flush();
+
+      expect(logged('ws.message')[0]).toMatchObject({ outcome: 'unauthorized' });
+      expect(logged('ws.message')[0]).not.toHaveProperty('userId');
+    });
+
+    it('logs an unexpected failure at error level', async () => {
+      const { connect, betting, logged } = setup();
+      const socket = await connect();
+      jest.spyOn(betting, 'placeBet').mockRejectedValueOnce(new Error('boom'));
+
+      socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+      await flush();
+
+      expect(logged('ws.message')).toEqual([
+        expect.objectContaining({
+          level: 'error',
+          outcome: 'internal_error',
+          err: expect.objectContaining({ message: 'boom' }),
+        }),
+      ]);
+    });
+
+    it('never logs the token', async () => {
+      const { connect, logged, store } = setup();
+      const socket = await connect('alice');
+      socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+      await flush();
+      socket.disconnect(1000);
+
+      const [user] = store.users.values();
+      expect(JSON.stringify(logged())).not.toContain(user!.token);
+    });
+  });
+
+  describe('connection log', () => {
+    it('logs a closed connection with what happened on it', async () => {
+      const { connect, logged, userIdOf } = setup();
+      const socket = await connect('alice');
+      socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+      socket.receive({ type: 'cashout', requestId: 'r2' });
+      await flush();
+
+      socket.disconnect(1001);
+
+      expect(logged('ws.connection')).toEqual([
+        expect.objectContaining({
+          level: 'info',
+          connectionId: logged('ws.message')[0]?.connectionId,
+          userId: userIdOf('alice'),
+          authOutcome: 'ok',
+          closeCode: 1001,
+          messagesReceived: 2,
+          durationMs: expect.any(Number),
+        }),
+      ]);
+    });
+
+    it('gives every connection its own id', async () => {
+      const { connect, logged } = setup();
+      const first = await connect('alice');
+      const second = await connect('bob');
+
+      first.disconnect(1000);
+      second.disconnect(1000);
+
+      const [a, b] = logged('ws.connection');
+      expect(a?.connectionId).not.toBe(b?.connectionId);
+    });
+
+    it('logs a connection rejected for an unknown token', async () => {
+      const { gateway, logged } = setup();
+      const socket = new FakeSocket();
+
+      gateway.handleConnection(
+        socket as unknown as WebSocket,
+        {
+          url: '/ws?token=unknown',
+        } as IncomingMessage,
+      );
+      await flush();
+
+      expect(logged('ws.connection')).toEqual([
+        expect.objectContaining({ level: 'info', authOutcome: 'unauthorized', closeCode: 4401 }),
+      ]);
+      expect(logged('ws.connection')[0]).not.toHaveProperty('userId');
+    });
+
+    it('logs a failed authentication at error level', async () => {
+      const { gateway, auth, logged } = setup();
+      jest.spyOn(auth, 'authenticate').mockRejectedValueOnce(new Error('database down'));
+      const socket = new FakeSocket();
+
+      gateway.handleConnection(
+        socket as unknown as WebSocket,
+        {
+          url: '/ws?token=any',
+        } as IncomingMessage,
+      );
+      await flush();
+
+      expect(logged('ws.connection')).toEqual([
+        expect.objectContaining({
+          level: 'error',
+          authOutcome: 'error',
+          closeCode: 4401,
+          err: expect.objectContaining({ message: 'database down' }),
+        }),
+      ]);
+    });
+
+    it('logs a connection refused while shutting down', async () => {
+      const { gateway, logged } = setup();
+      await gateway.beforeApplicationShutdown();
+      const socket = new FakeSocket();
+
+      gateway.handleConnection(
+        socket as unknown as WebSocket,
+        {
+          url: '/ws?token=any',
+        } as IncomingMessage,
+      );
+
+      expect(logged('ws.connection')).toEqual([
+        expect.objectContaining({ authOutcome: 'shutting_down', closeCode: 1012 }),
+      ]);
     });
   });
 
@@ -428,6 +697,48 @@ describe('GameGateway', () => {
 
       expect(socket.sent).toContainEqual(expect.objectContaining({ type: 'bet:accepted' }));
       expect(socket.closeCode).toBe(1012);
+    });
+
+    it('logs the shutdown with the operations it waited for and the sockets it closed', async () => {
+      const { connect, gateway, store, logged } = setup();
+      const alice = await connect('alice');
+      await connect('bob');
+      let finishWrite = () => undefined as void;
+      const realPlaceBet = store.placeBet.bind(store);
+      jest
+        .spyOn(store, 'placeBet')
+        .mockImplementationOnce(
+          input => new Promise(resolve => (finishWrite = () => resolve(realPlaceBet(input)))),
+        );
+      alice.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+      await flush();
+
+      const shuttingDown = gateway.beforeApplicationShutdown();
+      finishWrite();
+      await shuttingDown;
+
+      expect(logged('shutdown')).toEqual([
+        expect.objectContaining({
+          level: 'info',
+          moneyOpsInFlight: 1,
+          socketsClosed: 2,
+          durationMs: expect.any(Number),
+        }),
+      ]);
+    });
+
+    it('logs a failed shutdown at error level', async () => {
+      const { gateway, game, logged } = setup();
+      game.stop = () => Promise.reject(new Error('stuck'));
+
+      await expect(gateway.beforeApplicationShutdown()).rejects.toThrow('stuck');
+
+      expect(logged('shutdown')).toEqual([
+        expect.objectContaining({
+          level: 'error',
+          err: expect.objectContaining({ message: 'stuck' }),
+        }),
+      ]);
     });
   });
 });

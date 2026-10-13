@@ -38,6 +38,9 @@
 - Single round leader: a lease in PostgreSQL with a fencing token (epoch), checked by every round write, so a stale leader cannot create or change rounds; money needs no lock (conditional updates already guarantee exactly-once)
 - Leader handover continues the current round from the database (restart recovery for one instance is done in Phase 2)
 - Revisit per-instance in-memory auto-cashout tracking
+- Player investigation in Grafana: given a `userId` and a time range, see everything that happened to that player (requests, connections, bets, payouts) to understand a reported problem
+  - Logs in Grafana: Loki + Alloy reading container stdout (ADR-0005), a dashboard filtered by `userId` and time
+  - Gap to close: `auto_cashout` and `settlement` events are aggregates without `userId`, so a player's auto-cashouts, losses and refunds are only in the database. Either log them per bet or add a PostgreSQL datasource panel over `bets` and `ledger_entries`
 
 ## Phase 6 — Experiments (write-up per experiment in `docs/experiments/`)
 

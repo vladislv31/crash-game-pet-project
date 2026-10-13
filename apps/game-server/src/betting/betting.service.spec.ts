@@ -1,8 +1,8 @@
-import { Logger } from '@nestjs/common';
-
+import { GameEvent } from '../game/game-loop';
 import { crashTimeMs } from '../game/multiplier';
 import { Round } from '../game/round';
 import { InMemoryStore } from '../testing/in-memory-store';
+import { createTestLogger } from '../testing/test-logger';
 import { User } from '../users/user';
 import { BettingError } from './betting.errors';
 import { BettingEvent, BettingService, GameSource } from './betting.service';
@@ -23,7 +23,8 @@ async function setup(crashPoint = 500) {
     subscribe: () => undefined,
   };
   await store.create({ id: 'round-1', crashPoint, bettingEndsAt: STARTED_AT });
-  const service = new BettingService(store, game);
+  const { logger, events: logged } = createTestLogger();
+  const service = new BettingService(store, game, logger);
   const events: BettingEvent[] = [];
   service.subscribe(event => events.push(event));
   const user = await store.findOrCreate('alice', '5000', 'token-alice');
@@ -48,7 +49,7 @@ async function setup(crashPoint = 500) {
     databaseTime = time;
   }
 
-  return { store, game, service, events, user, round, placeBet, setDatabaseTime };
+  return { store, game, service, events, logger, logged, user, round, placeBet, setDatabaseTime };
 }
 
 function expectBettingError(promise: Promise<unknown>, code: string) {
@@ -160,7 +161,31 @@ describe('BettingService', () => {
       const first = await placeBet('100', undefined, 'bet-1');
       round().start(STARTED_AT);
 
-      await expect(placeBet('100', undefined, 'bet-1')).resolves.toEqual(first);
+      await expect(placeBet('100', undefined, 'bet-1')).resolves.toMatchObject({
+        bet: first.bet,
+        balance: first.balance,
+      });
+    });
+
+    it('marks a new bet as not replayed', async () => {
+      const { placeBet } = await setup();
+
+      await expect(placeBet()).resolves.toMatchObject({ replayed: false });
+    });
+
+    it('marks a retried bet as replayed', async () => {
+      const { placeBet } = await setup();
+      await placeBet('100', undefined, 'bet-1');
+
+      await expect(placeBet('100', undefined, 'bet-1')).resolves.toMatchObject({ replayed: true });
+    });
+
+    it('marks all but one of concurrent identical requests as replayed', async () => {
+      const { placeBet } = await setup();
+
+      const results = await Promise.all([placeBet(), placeBet(), placeBet()]);
+
+      expect(results.map(result => result.replayed).sort()).toEqual([false, true, true]);
     });
 
     it('rejects a reused request id with a different bet', async () => {
@@ -275,8 +300,37 @@ describe('BettingService', () => {
 
       const repeated = await service.cashOut(user, at(180));
 
-      expect(repeated).toEqual(first);
+      expect(repeated).toMatchObject({ bet: first.bet, balance: first.balance });
       expect(store.ledger.filter(entry => entry.type === 'WIN')).toHaveLength(1);
+    });
+
+    it('marks a paid cashout as not replayed', async () => {
+      const { placeBet, service, round, user } = await setup(500);
+      await placeBet('100');
+      round().start(STARTED_AT);
+
+      await expect(service.cashOut(user, at(150))).resolves.toMatchObject({ replayed: false });
+    });
+
+    it('marks a repeated cashout as replayed', async () => {
+      const { placeBet, service, round, user } = await setup(500);
+      await placeBet('100');
+      round().start(STARTED_AT);
+      await service.cashOut(user, at(150));
+
+      await expect(service.cashOut(user, at(180))).resolves.toMatchObject({ replayed: true });
+    });
+
+    it('marks a cashout after the auto-cashout paid as replayed', async () => {
+      const { placeBet, service, round, user } = await setup(500);
+      await placeBet('100', 150);
+      round().start(STARTED_AT);
+      await service.handleGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 150 });
+
+      await expect(service.cashOut(user, at(180))).resolves.toMatchObject({
+        replayed: true,
+        bet: { cashoutMultiplier: 150 },
+      });
     });
 
     it('rejects a cashout of a bet that was already lost', async () => {
@@ -379,6 +433,82 @@ describe('BettingService', () => {
       });
     });
 
+    it('logs a tick that paid auto-cashouts', async () => {
+      const { placeBet, service, round, store, logged } = await setup(500);
+      const bob = await store.findOrCreate('bob', '5000', 'token-bob');
+      await placeBet('100', 150);
+      await placeBet('100', 200, 'bet-2', bob);
+      round().start(STARTED_AT);
+
+      await service.handleGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 153 });
+
+      expect(logged('auto_cashout')).toEqual([
+        expect.objectContaining({
+          level: 'info',
+          roundId: 'round-1',
+          trigger: 'tick',
+          multiplier: 153,
+          due: 1,
+          paid: 1,
+          failed: 0,
+          durationMs: expect.any(Number),
+        }),
+      ]);
+    });
+
+    it('does not log ticks that paid nothing', async () => {
+      const { placeBet, service, round, logged } = await setup(500);
+      await placeBet('100', 150);
+      round().start(STARTED_AT);
+
+      await service.handleGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 149 });
+
+      expect(logged('auto_cashout')).toEqual([]);
+    });
+
+    it('logs auto-cashouts paid at the crash with the crash point', async () => {
+      const { placeBet, service, round, logged } = await setup(160);
+      await placeBet('100', 155);
+      round().start(STARTED_AT);
+
+      await service.handleGameEvent({
+        type: 'crashed',
+        roundId: 'round-1',
+        crashPoint: 160,
+        crashedAt: at(160),
+      });
+
+      expect(logged('auto_cashout')).toEqual([
+        expect.objectContaining({ trigger: 'crash', multiplier: 160, due: 1, paid: 1 }),
+      ]);
+    });
+
+    it('keeps paying the other bets when one auto-cashout fails, and logs the failure', async () => {
+      const { placeBet, service, round, store, user, logged } = await setup(500);
+      const bob = await store.findOrCreate('bob', '5000', 'token-bob');
+      await placeBet('100', 150);
+      await placeBet('100', 150, 'bet-2', bob);
+      round().start(STARTED_AT);
+      jest.spyOn(store, 'cashOut').mockRejectedValueOnce(new Error('database down'));
+
+      await service.handleGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 150 });
+
+      expect(store.ledger.filter(entry => entry.type === 'WIN')).toHaveLength(1);
+      expect([store.users.get(user.id)?.balance, store.users.get(bob.id)?.balance].sort()).toEqual([
+        '4900',
+        '5050',
+      ]);
+      expect(logged('auto_cashout')).toEqual([
+        expect.objectContaining({
+          level: 'error',
+          due: 2,
+          paid: 1,
+          failed: 1,
+          err: expect.objectContaining({ message: 'database down' }),
+        }),
+      ]);
+    });
+
     it('leaves a target at or above the crash point unpaid', async () => {
       const { placeBet, service, round, store } = await setup(160);
       const { bet } = await placeBet('100', 160);
@@ -397,7 +527,7 @@ describe('BettingService', () => {
 
   describe('after a restart', () => {
     it('pays auto-cashouts of a continued round from the bets in the store', async () => {
-      const { store, user, game } = await setup(500);
+      const { store, user, game, logger } = await setup(500);
       const placed = await store.placeBet({
         userId: user.id,
         username: user.username,
@@ -406,7 +536,7 @@ describe('BettingService', () => {
         autoCashout: 150,
         idempotencyKey: 'before-restart',
       });
-      const restarted = new BettingService(store, game);
+      const restarted = new BettingService(store, game, logger);
 
       await restarted.handleGameEvent({
         type: 'started',
@@ -418,9 +548,54 @@ describe('BettingService', () => {
       expect(placed.status).toBe('placed');
       expect(store.ledger.filter(entry => entry.type === 'WIN')).toHaveLength(1);
     });
+
+    it('logs a failure to reload the bets of a continued round', async () => {
+      const { store, game, logger, logged } = await setup(500);
+      let notify = (_event: GameEvent) => undefined as void;
+      const restarted = new BettingService(
+        store,
+        { ...game, subscribe: listener => (notify = listener) },
+        logger,
+      );
+      restarted.onModuleInit();
+      jest.spyOn(store, 'findActiveBets').mockRejectedValueOnce(new Error('database down'));
+
+      notify({ type: 'started', roundId: 'round-1', startedAt: STARTED_AT });
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(logged('betting.game_event_failed')).toEqual([
+        expect.objectContaining({
+          level: 'error',
+          type: 'started',
+          err: expect.objectContaining({ message: 'database down' }),
+        }),
+      ]);
+    });
   });
 
   describe('shutdown', () => {
+    it('counts money operations in progress', async () => {
+      const { placeBet, service, store } = await setup();
+      let finishWrite = () => undefined as void;
+      const realPlaceBet = store.placeBet.bind(store);
+      jest
+        .spyOn(store, 'placeBet')
+        .mockImplementationOnce(
+          input => new Promise(resolve => (finishWrite = () => resolve(realPlaceBet(input)))),
+        );
+
+      expect(service.inFlightCount).toBe(0);
+
+      const pending = placeBet();
+      expect(service.inFlightCount).toBe(1);
+
+      await Promise.resolve();
+      finishWrite();
+      await pending;
+      await service.drain();
+      expect(service.inFlightCount).toBe(0);
+    });
+
     it('also waits for operations that start while it is draining', async () => {
       const { placeBet, service, store, user } = await setup();
       const bob = await store.findOrCreate('bob', '5000', 'token-bob');
@@ -563,10 +738,10 @@ describe('BettingService', () => {
     });
 
     it('settles bets left over from before a restart', async () => {
-      const { store, user, game } = await setup(200);
+      const { store, user, game, logger } = await setup(200);
       const bet = await writeBet(store, user, 150);
       await store.markCrashed('round-1', at(200));
-      const restarted = new BettingService(store, game);
+      const restarted = new BettingService(store, game, logger);
 
       await openRound(restarted, 'round-2');
 
@@ -614,7 +789,6 @@ describe('BettingService', () => {
     });
 
     it('keeps settling the other bets when one of them fails, and retries it later', async () => {
-      const errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
       const { store, user, service } = await setup(200);
       const bob = await store.findOrCreate('bob', '5000', 'token-bob');
       const aliceBet = await writeBet(store, user);
@@ -626,13 +800,109 @@ describe('BettingService', () => {
 
       const statuses = [store.bets.get(aliceBet.id)?.status, store.bets.get(bobBet.id)?.status];
       expect(statuses.sort()).toEqual(['ACTIVE', 'LOST']);
-      expect(errorSpy).toHaveBeenCalled();
 
       await openRound(service, 'round-3');
 
       expect(store.bets.get(aliceBet.id)?.status).toBe('LOST');
       expect(store.bets.get(bobBet.id)?.status).toBe('LOST');
-      errorSpy.mockRestore();
+    });
+
+    it('logs each sweep with the number of bets by result', async () => {
+      const { store, user, service, logged } = await setup(200);
+      const bob = await store.findOrCreate('bob', '5000', 'token-bob');
+      const carol = await store.findOrCreate('carol', '5000', 'token-carol');
+      await writeBet(store, user, 150);
+      await writeBet(store, bob);
+      await store.markCrashed('round-1', at(200));
+      await store.create({ id: 'round-0', crashPoint: 300, bettingEndsAt: STARTED_AT });
+      await store.placeBet({
+        userId: carol.id,
+        username: carol.username,
+        roundId: 'round-0',
+        amount: '100',
+        autoCashout: null,
+        idempotencyKey: 'interrupted',
+      });
+
+      await openRound(service, 'round-2');
+
+      expect(logged('settlement')).toEqual([
+        expect.objectContaining({
+          level: 'info',
+          roundId: 'round-2',
+          found: 3,
+          won: 1,
+          lost: 1,
+          refunded: 1,
+          skipped: 0,
+          failed: 0,
+          durationMs: expect.any(Number),
+        }),
+      ]);
+    });
+
+    it('logs a sweep that found nothing', async () => {
+      const { service, logged } = await setup(200);
+
+      await openRound(service, 'round-2');
+
+      expect(logged('settlement')).toEqual([
+        expect.objectContaining({ found: 0, won: 0, lost: 0, refunded: 0, failed: 0 }),
+      ]);
+    });
+
+    it('counts bets settled meanwhile by someone else as skipped', async () => {
+      const { store, user, service, logged } = await setup(200);
+      await writeBet(store, user);
+      jest.spyOn(store, 'refund').mockResolvedValueOnce(null);
+
+      await openRound(service, 'round-2');
+
+      expect(logged('settlement')[0]).toMatchObject({ found: 1, refunded: 0, skipped: 1 });
+    });
+
+    it('counts a win paid meanwhile by someone else as skipped', async () => {
+      const { store, user, service, logged } = await setup(200);
+      await writeBet(store, user, 150);
+      await store.markCrashed('round-1', at(200));
+      jest.spyOn(store, 'cashOut').mockResolvedValueOnce(null);
+
+      await openRound(service, 'round-2');
+
+      expect(logged('settlement')[0]).toMatchObject({ found: 1, won: 0, skipped: 1 });
+    });
+
+    it('logs failed bets of a sweep at error level', async () => {
+      const { store, user, service, logged } = await setup(200);
+      await writeBet(store, user);
+      await crash(store, service, 200);
+      jest.spyOn(store, 'markLost').mockRejectedValueOnce(new Error('database down'));
+
+      await openRound(service, 'round-2');
+
+      expect(logged('settlement')).toEqual([
+        expect.objectContaining({
+          level: 'error',
+          found: 1,
+          lost: 0,
+          failed: 1,
+          err: expect.objectContaining({ message: 'database down' }),
+        }),
+      ]);
+    });
+
+    it('logs a sweep that could not read the unsettled bets', async () => {
+      const { store, service, logged } = await setup(200);
+      jest.spyOn(store, 'findUnsettledBets').mockRejectedValueOnce(new Error('database down'));
+
+      await openRound(service, 'round-2');
+
+      expect(logged('settlement')).toEqual([
+        expect.objectContaining({
+          level: 'error',
+          err: expect.objectContaining({ message: 'database down' }),
+        }),
+      ]);
     });
   });
 });
