@@ -53,6 +53,11 @@
   - README: how to run and observe, game overview, dashboard panels; load simulations recorded by the owner (idle baseline, CPU block, huge array, a million small objects)
   - Remaining server metrics (ADR-0006), implemented by subagents on request (TDD) and reviewed by a separate agent; review fixes applied: request duration and results, connections, broadcast duration, buffered bytes, draining, money operations in flight, auto-cashout and settlement results, unsettled bets, round write failures, database pool; dashboard extended to 19 panels
     - unit tests 363/363 (game-server), integration tests 31/31
+  - ADR-0007 money reconciliation, implemented by Claude on request (TDD), awaiting owner review: eight invariants checked in one read-only snapshot on a dedicated connection, every minute in the server and on demand (`npm run reconcile`); a `reconciliation` log event and metrics, two dashboard panels; no tables
+    - `npm run reconcile` prints readable output in a terminal, JSON in a pipe; exit code kept
+    - unit tests 392/392 (game-server), integration tests 52/52
+  - `npm run verify`: one command for format, lint, typecheck (every workspace), unit and integration tests
+    - its first run found a real mismatch in the dev database: user `vlados` (created before the ledger existed) has no `INITIAL` entry, so the balance is 5000 above the ledger
   - Next: Phase 3 is complete once the owner has checked the dashboard under load; then Phase 4 (load generator)
 
 ## Backlog (before experiments)
@@ -60,7 +65,6 @@
 - WebSocket hardening: `maxPayload`, per-socket message rate limit, ignore messages before auth, ping/pong to drop dead connections
 - Rate limit `POST /auth/login` (every new username creates a user)
 - Partial index on `bets` for `status = 'ACTIVE'` (settlement sweep scans the table)
-- Reconciliation check: `users.balance` equals the sum of `ledger_entries` per user; each bet has exactly one `BET` entry, `CASHED_OUT` exactly one `WIN` equal to its payout, `VOID` exactly one `REFUND`, `LOST` neither; payout = amount × multiplier, never above max win. Reports mismatches as an error log event and a metric
 - End-to-end WebSocket test through the real app (login → bet → cashout)
 - CI: lint, unit tests, integration tests with PostgreSQL
 

@@ -40,3 +40,21 @@ export function appDatabaseOptions(
     },
   };
 }
+
+const RECONCILIATION_STATEMENT_TIMEOUT_MS = 60_000;
+
+/**
+ * Reconciliation's own connection (ADR-0007): a single connection, so a full scan never takes one
+ * that bets and cashouts wait for, and a statement limit instead of the app's 3 s transaction limit.
+ */
+export function reconciliationDatabaseOptions(
+  env: NodeJS.ProcessEnv = process.env,
+): PostgresConnectionOptions {
+  return {
+    ...databaseOptions(env),
+    extra: {
+      max: 1,
+      options: `-c statement_timeout=${RECONCILIATION_STATEMENT_TIMEOUT_MS}`,
+    },
+  };
+}

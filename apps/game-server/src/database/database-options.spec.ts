@@ -1,4 +1,8 @@
-import { appDatabaseOptions, databaseOptions } from './database-options';
+import {
+  appDatabaseOptions,
+  databaseOptions,
+  reconciliationDatabaseOptions,
+} from './database-options';
 
 describe('databaseOptions', () => {
   it('defaults to the docker-compose database', () => {
@@ -36,5 +40,23 @@ describe('appDatabaseOptions', () => {
 
   it('connects to the same database', () => {
     expect(appDatabaseOptions({ POSTGRES_DB: 'game' })).toMatchObject({ database: 'game' });
+  });
+});
+
+describe('reconciliationDatabaseOptions', () => {
+  it('uses a single connection, so a scan never takes connections from bets and cashouts', () => {
+    expect(reconciliationDatabaseOptions({}).extra).toMatchObject({ max: 1 });
+  });
+
+  it('bounds each statement at 60 s instead of the app transaction limit of 3 s', () => {
+    const { options } = reconciliationDatabaseOptions({}).extra as { options: string };
+
+    expect(options).toBe('-c statement_timeout=60000');
+  });
+
+  it('connects to the same database', () => {
+    expect(reconciliationDatabaseOptions({ POSTGRES_DB: 'game' })).toMatchObject({
+      database: 'game',
+    });
   });
 });

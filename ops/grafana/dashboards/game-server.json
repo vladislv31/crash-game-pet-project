@@ -736,6 +736,106 @@
     {
       "id": 17,
       "type": "timeseries",
+      "title": "Reconciliation mismatches",
+      "description": "Broken money invariants found by the last reconciliation, by type (ADR-0007). Anything above 0 needs investigation.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 44
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "max by (type) (crash_reconciliation_mismatches)",
+          "legendFormat": "{{type}}"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Since last reconciliation",
+      "description": "Seconds since the last completed reconciliation. Growing past the interval (60 s by default) means it stopped working.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "time() - max(crash_reconciliation_last_success_timestamp_seconds)",
+          "legendFormat": "seconds"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
       "title": "Round write failures",
       "description": "Failed round writes per window, by operation. mark_crashed counts every failed attempt of the retried crash write.",
       "datasource": {
@@ -746,7 +846,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 44
+        "y": 52
       },
       "fieldConfig": {
         "defaults": {
@@ -784,7 +884,7 @@
       ]
     },
     {
-      "id": 18,
+      "id": 20,
       "type": "timeseries",
       "title": "Failed settlement sweeps",
       "description": "Sweeps that could not read the unsettled bets, per window.",
@@ -796,7 +896,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 44
+        "y": 52
       },
       "fieldConfig": {
         "defaults": {
@@ -834,7 +934,7 @@
       ]
     },
     {
-      "id": 19,
+      "id": 21,
       "type": "timeseries",
       "title": "Draining",
       "description": "1 while an instance shuts down and drains requests.",
@@ -846,7 +946,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 44
+        "y": 52
       },
       "fieldConfig": {
         "defaults": {
@@ -884,7 +984,7 @@
       ]
     },
     {
-      "id": 20,
+      "id": 22,
       "type": "row",
       "title": "Event loop",
       "collapsed": false,
@@ -892,12 +992,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 52
+        "y": 60
       },
       "panels": []
     },
     {
-      "id": 21,
+      "id": 23,
       "type": "timeseries",
       "title": "Event loop lag",
       "description": "From monitorEventLoopDelay, reset on every scrape (each point covers 5 s). An idle process reads about 10 ms (the measuring interval): the real lag is the value minus about 10 ms.",
@@ -909,7 +1009,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 53
+        "y": 61
       },
       "fieldConfig": {
         "defaults": {
@@ -974,7 +1074,7 @@
       ]
     },
     {
-      "id": 22,
+      "id": 24,
       "type": "row",
       "title": "Process",
       "collapsed": false,
@@ -982,12 +1082,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 61
+        "y": 69
       },
       "panels": []
     },
     {
-      "id": 23,
+      "id": 25,
       "type": "timeseries",
       "title": "CPU",
       "description": "Share of one core used by the process.",
@@ -999,7 +1099,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 62
+        "y": 70
       },
       "fieldConfig": {
         "defaults": {
@@ -1037,7 +1137,7 @@
       ]
     },
     {
-      "id": 24,
+      "id": 26,
       "type": "timeseries",
       "title": "Memory",
       "description": "Resident set size and V8 heap.",
@@ -1049,7 +1149,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 62
+        "y": 70
       },
       "fieldConfig": {
         "defaults": {
@@ -1105,7 +1205,7 @@
       ]
     },
     {
-      "id": 25,
+      "id": 27,
       "type": "timeseries",
       "title": "GC time",
       "description": "Share of time spent in garbage collection, by kind.",
@@ -1117,7 +1217,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 62
+        "y": 70
       },
       "fieldConfig": {
         "defaults": {

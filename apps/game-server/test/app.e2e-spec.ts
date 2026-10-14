@@ -6,6 +6,7 @@ import { AppModule } from './../src/app.module';
 import { configureApp } from './../src/configure-app';
 import { runMigrations } from './../src/database/run-migrations';
 import { APP_LOGGER } from './../src/logging/logger';
+import { ReconciliationService } from './../src/reconciliation/reconciliation.service';
 import { createTestLogger, LoggedEvent } from './../src/testing/test-logger';
 
 describe('AppController (e2e)', () => {
@@ -57,6 +58,24 @@ describe('AppController (e2e)', () => {
     expect(response.text).toContain('# TYPE crash_tick_delay_seconds histogram');
     expect(response.text).toContain('# TYPE nodejs_eventloop_lag_p99_seconds gauge');
     expect(logged('http.request')).toEqual([]);
+  });
+
+  it('reconciles the money on its own connection and reports it as metrics', async () => {
+    await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ username: 'e2e_reconcile' })
+      .expect(200);
+
+    const report = await app.get(ReconciliationService).run();
+    const response = await request(app.getHttpServer()).get('/metrics').expect(200);
+
+    expect(report?.usersChecked).toBeGreaterThan(0);
+    // Other integration tests leave broken money on purpose, so only a completed run is asserted.
+    expect(logged('reconciliation')).toEqual([
+      expect.objectContaining({ outcome: expect.stringMatching(/^(ok|mismatch)$/) }),
+    ]);
+    expect(response.text).toContain('crash_reconciliation_last_success_timestamp_seconds');
+    expect(response.text).toContain('crash_reconciliation_mismatches{type="balance"}');
   });
 
   it('reports no migrations to apply on an up-to-date database', async () => {

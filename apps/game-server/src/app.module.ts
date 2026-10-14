@@ -10,6 +10,7 @@ import { GameModule } from './game/game.module';
 import { GatewayModule } from './gateway/gateway.module';
 import { LoggingModule } from './logging/logging.module';
 import { MetricsModule } from './metrics/metrics.module';
+import { ReconciliationModule } from './reconciliation/reconciliation.module';
 import { UsersModule } from './users/users.module';
 
 @Module({
@@ -23,6 +24,7 @@ import { UsersModule } from './users/users.module';
     UsersModule,
     BettingModule,
     GatewayModule,
+    ReconciliationModule,
   ],
   controllers: [AppController],
   providers: [DatabaseMetrics],

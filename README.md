@@ -49,7 +49,13 @@ npm run dev -w web
 
 The game server listens on port 3000 and applies migrations on start; the client runs on http://localhost:5173.
 
-Tests and checks:
+Before calling a change done, run the whole gate (formatting, lint, type checks, unit tests and integration tests; needs `docker compose up -d`). It stops at the first failure:
+
+```bash
+npm run verify
+```
+
+Single steps:
 
 ```bash
 npm test
@@ -60,7 +66,7 @@ npm run test:e2e -w game-server
 ```
 
 ```bash
-npm run lint && npm run format:check
+npm run lint && npm run format:check && npm run typecheck
 ```
 
 ## Observability
@@ -87,6 +93,16 @@ Outcomes of cashout requests (`accepted`, `replayed`, error codes):
 jq -r 'select(.event == "ws.message" and .type == "cashout") | .outcome' apps/game-server/logs/dev.jsonl | sort | uniq -c
 ```
 
+### Money reconciliation
+
+The server checks the money invariants every minute ([ADR-0007](docs/adr/0007-reconciliation.md)): balances against the ledger, every bet against its ledger entries, payouts against amount × multiplier, the max win and the crash point. Each run is one `reconciliation` log event (`error` when anything is off) and the metrics behind the **Reconciliation** panels. To get a verdict right away, for example after an experiment:
+
+```bash
+npm run reconcile -w game-server
+```
+
+It prints the result readably in a terminal (JSON when piped or redirected, for `jq`) and exits with code 1 when the money does not add up.
+
 ### Metrics and dashboards
 
 The server exposes Prometheus metrics at http://localhost:3000/metrics ([ADR-0006](docs/adr/0006-metrics.md)). Prometheus and Grafana run in the `observability` compose profile:
@@ -98,25 +114,26 @@ docker compose --profile observability up -d
 - Prometheus: http://localhost:9090 (`/targets` shows whether the game server is scraped)
 - Grafana: http://localhost:3001, dashboard **Game server**
 
-| Panel                                           | What it shows                                                                                                                                                                                                                                                               |
-| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Tick delay                                      | How much later than planned each tick fired, p50/p95/p99. Ticks come from a 100 ms `setInterval`; when the event loop is busy, the timer fires late. This is the lag players see as a jerky multiplier. Empty between rounds: ticks only fire while a round runs.           |
-| Ticks per second                                | Average tick rate over the rate window (at least 20 s, four 5 s scrapes). Ticks run at exactly 10/s during a flight, but the window also covers betting and the pause, so a 2x round (about 6.5 s of flight) shows about 3/s. Only flights longer than the window reach 10. |
-| Event loop lag                                  | p50/p90/p99/max of `monitorEventLoopDelay`, reset on every scrape (each point covers 5 s). It records the interval between firings of its own 10 ms timer, so an idle process reads about 10 ms plus OS timer slack: the real lag is the value minus about 10 ms.           |
-| CPU                                             | Share of one core used by the process.                                                                                                                                                                                                                                      |
-| Memory                                          | Resident set size, V8 heap used and total.                                                                                                                                                                                                                                  |
-| GC time                                         | Share of time spent in garbage collection, by kind (minor, major, incremental).                                                                                                                                                                                             |
-| Request duration                                | p50/p99 time from receipt of a bet or cashout message to the response, by type. Starts when the handler runs, so time waiting behind a busy event loop is not in it.                                                                                                        |
-| Requests by result                              | Requests per second by type and result: `accepted`, `replayed` (answered with an existing result, e.g. a duplicate cashout) or the error code sent.                                                                                                                         |
-| Connections                                     | Open sockets, including those waiting for the token check.                                                                                                                                                                                                                  |
-| Broadcast duration p99                          | Synchronous CPU time to serialize one broadcast and hand it to every socket, by message type. Grows with the number of clients.                                                                                                                                             |
-| Buffered bytes                                  | Data queued for slow clients: total and the largest single socket.                                                                                                                                                                                                          |
-| Money operations in flight                      | Bets, cashouts, auto-cashouts and settlements waiting for the database. Rises when the database is the bottleneck while event loop lag stays flat.                                                                                                                          |
-| Database pool                                   | Total, idle and waiting connections of the app's pool. Waiting above 0 means requests queue for a connection; they give up after 1 s.                                                                                                                                       |
-| Unsettled bets                                  | Bets of earlier rounds the last settlement sweep could not settle. Above 0 means stuck bets.                                                                                                                                                                                |
-| Auto-cashouts / Settled bets                    | Bets per window by result: auto-cashouts by trigger (`tick`, `crash`) and `paid`/`skipped`/`failed`; sweeps by `won`/`lost`/`refunded`/`skipped`/`failed`.                                                                                                                  |
-| Round write failures / Failed settlement sweeps | Failed round writes by operation and sweeps that could not read the open bets: database trouble in the game loop.                                                                                                                                                           |
-| Draining                                        | 1 while the server shuts down and finishes requests in progress.                                                                                                                                                                                                            |
+| Panel                                                 | What it shows                                                                                                                                                                                                                                                               |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tick delay                                            | How much later than planned each tick fired, p50/p95/p99. Ticks come from a 100 ms `setInterval`; when the event loop is busy, the timer fires late. This is the lag players see as a jerky multiplier. Empty between rounds: ticks only fire while a round runs.           |
+| Ticks per second                                      | Average tick rate over the rate window (at least 20 s, four 5 s scrapes). Ticks run at exactly 10/s during a flight, but the window also covers betting and the pause, so a 2x round (about 6.5 s of flight) shows about 3/s. Only flights longer than the window reach 10. |
+| Event loop lag                                        | p50/p90/p99/max of `monitorEventLoopDelay`, reset on every scrape (each point covers 5 s). It records the interval between firings of its own 10 ms timer, so an idle process reads about 10 ms plus OS timer slack: the real lag is the value minus about 10 ms.           |
+| CPU                                                   | Share of one core used by the process.                                                                                                                                                                                                                                      |
+| Memory                                                | Resident set size, V8 heap used and total.                                                                                                                                                                                                                                  |
+| GC time                                               | Share of time spent in garbage collection, by kind (minor, major, incremental).                                                                                                                                                                                             |
+| Request duration                                      | p50/p99 time from receipt of a bet or cashout message to the response, by type. Starts when the handler runs, so time waiting behind a busy event loop is not in it.                                                                                                        |
+| Requests by result                                    | Requests per second by type and result: `accepted`, `replayed` (answered with an existing result, e.g. a duplicate cashout) or the error code sent.                                                                                                                         |
+| Connections                                           | Open sockets, including those waiting for the token check.                                                                                                                                                                                                                  |
+| Broadcast duration p99                                | Synchronous CPU time to serialize one broadcast and hand it to every socket, by message type. Grows with the number of clients.                                                                                                                                             |
+| Buffered bytes                                        | Data queued for slow clients: total and the largest single socket.                                                                                                                                                                                                          |
+| Money operations in flight                            | Bets, cashouts, auto-cashouts and settlements waiting for the database. Rises when the database is the bottleneck while event loop lag stays flat.                                                                                                                          |
+| Database pool                                         | Total, idle and waiting connections of the app's pool. Waiting above 0 means requests queue for a connection; they give up after 1 s.                                                                                                                                       |
+| Unsettled bets                                        | Bets of earlier rounds the last settlement sweep could not settle. Above 0 means stuck bets.                                                                                                                                                                                |
+| Auto-cashouts / Settled bets                          | Bets per window by result: auto-cashouts by trigger (`tick`, `crash`) and `paid`/`skipped`/`failed`; sweeps by `won`/`lost`/`refunded`/`skipped`/`failed`.                                                                                                                  |
+| Round write failures / Failed settlement sweeps       | Failed round writes by operation and sweeps that could not read the open bets: database trouble in the game loop.                                                                                                                                                           |
+| Draining                                              | 1 while the server shuts down and finishes requests in progress.                                                                                                                                                                                                            |
+| Reconciliation mismatches / Since last reconciliation | Broken money invariants found by the last run, by type, and how long ago the last run completed. Above 0, or a growing time since the last run, needs investigation.                                                                                                        |
 
 ## Load simulations
 
