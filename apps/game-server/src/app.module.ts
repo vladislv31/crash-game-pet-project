@@ -5,6 +5,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { BettingModule } from './betting/betting.module';
 import { appDatabaseOptions } from './database/database-options';
+import { DatabaseMetrics } from './database/database.metrics';
 import { GameModule } from './game/game.module';
 import { GatewayModule } from './gateway/gateway.module';
 import { LoggingModule } from './logging/logging.module';
@@ -24,5 +25,6 @@ import { UsersModule } from './users/users.module';
     GatewayModule,
   ],
   controllers: [AppController],
+  providers: [DatabaseMetrics],
 })
 export class AppModule {}

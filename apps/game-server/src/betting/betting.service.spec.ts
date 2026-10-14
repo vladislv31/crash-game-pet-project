@@ -1,10 +1,14 @@
+import { Registry } from 'prom-client';
+
 import { GameEvent } from '../game/game-loop';
 import { crashTimeMs } from '../game/multiplier';
 import { Round } from '../game/round';
+import { Metrics } from '../metrics/metrics';
 import { InMemoryStore } from '../testing/in-memory-store';
 import { createTestLogger } from '../testing/test-logger';
 import { User } from '../users/user';
 import { BettingError } from './betting.errors';
+import { BettingMetrics } from './betting.metrics';
 import { BettingEvent, BettingService, GameSource } from './betting.service';
 
 const STARTED_AT = 1_000_000;
@@ -12,6 +16,24 @@ const STARTED_AT = 1_000_000;
 /** Server time at which the multiplier first reaches `multiplier` (in hundredths). */
 function at(multiplier: number): number {
   return STARTED_AT + crashTimeMs(multiplier);
+}
+
+/** The current value of a metric series, or undefined when the series has not been recorded. */
+async function sample(
+  registry: Registry,
+  name: string,
+  labels: Record<string, string> = {},
+): Promise<number | undefined> {
+  const metric = registry.getSingleMetric(name);
+  if (!metric) {
+    throw new Error(`No metric ${name} on the registry`);
+  }
+  const { values } = await metric.get();
+  return values.find(
+    value =>
+      Object.keys(value.labels).length === Object.keys(labels).length &&
+      Object.entries(labels).every(([key, label]) => value.labels[key] === label),
+  )?.value;
 }
 
 async function setup(crashPoint = 500) {
@@ -24,7 +46,9 @@ async function setup(crashPoint = 500) {
   };
   await store.create({ id: 'round-1', crashPoint, bettingEndsAt: STARTED_AT });
   const { logger, events: logged } = createTestLogger();
-  const service = new BettingService(store, game, logger);
+  const metrics = new Metrics();
+  const bettingMetrics = new BettingMetrics(metrics);
+  const service = new BettingService(store, game, logger, bettingMetrics);
   const events: BettingEvent[] = [];
   service.subscribe(event => events.push(event));
   const user = await store.findOrCreate('alice', '5000', 'token-alice');
@@ -49,7 +73,20 @@ async function setup(crashPoint = 500) {
     databaseTime = time;
   }
 
-  return { store, game, service, events, logger, logged, user, round, placeBet, setDatabaseTime };
+  return {
+    store,
+    game,
+    service,
+    events,
+    logger,
+    logged,
+    bettingMetrics,
+    registry: metrics.registry,
+    user,
+    round,
+    placeBet,
+    setDatabaseTime,
+  };
 }
 
 function expectBettingError(promise: Promise<unknown>, code: string) {
@@ -523,11 +560,118 @@ describe('BettingService', () => {
 
       expect(store.bets.get(bet.id)?.status).toBe('ACTIVE');
     });
+
+    describe('metrics', () => {
+      it('counts auto-cashouts paid on a tick', async () => {
+        const { placeBet, service, round, registry } = await setup(500);
+        await placeBet('100', 150);
+        round().start(STARTED_AT);
+
+        await service.handleGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 153 });
+
+        expect(
+          await sample(registry, 'crash_auto_cashouts_total', { trigger: 'tick', result: 'paid' }),
+        ).toBe(1);
+      });
+
+      it('counts auto-cashouts paid at the crash', async () => {
+        const { placeBet, service, round, registry } = await setup(160);
+        await placeBet('100', 155);
+        round().start(STARTED_AT);
+
+        await service.handleGameEvent({
+          type: 'crashed',
+          roundId: 'round-1',
+          crashPoint: 160,
+          crashedAt: at(160),
+        });
+
+        expect(
+          await sample(registry, 'crash_auto_cashouts_total', { trigger: 'crash', result: 'paid' }),
+        ).toBe(1);
+        expect(
+          await sample(registry, 'crash_auto_cashouts_total', { trigger: 'tick', result: 'paid' }),
+        ).toBeUndefined();
+      });
+
+      it('counts a due bet that was already settled as skipped', async () => {
+        const { placeBet, service, round, store, registry } = await setup(500);
+        const bob = await store.findOrCreate('bob', '5000', 'token-bob');
+        await placeBet('100', 150);
+        await placeBet('100', 150, 'bet-2', bob);
+        round().start(STARTED_AT);
+        jest.spyOn(store, 'cashOut').mockResolvedValueOnce(null);
+
+        await service.handleGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 150 });
+
+        const labels = { trigger: 'tick' };
+        expect(
+          await sample(registry, 'crash_auto_cashouts_total', { ...labels, result: 'skipped' }),
+        ).toBe(1);
+        expect(
+          await sample(registry, 'crash_auto_cashouts_total', { ...labels, result: 'paid' }),
+        ).toBe(1);
+        expect(
+          await sample(registry, 'crash_auto_cashouts_total', { ...labels, result: 'failed' }),
+        ).toBe(0);
+      });
+
+      it('counts a failed auto-cashout while the other bets are still paid', async () => {
+        const { placeBet, service, round, store, registry } = await setup(500);
+        const bob = await store.findOrCreate('bob', '5000', 'token-bob');
+        const carol = await store.findOrCreate('carol', '5000', 'token-carol');
+        await placeBet('100', 150);
+        await placeBet('100', 150, 'bet-2', bob);
+        await placeBet('100', 150, 'bet-3', carol);
+        round().start(STARTED_AT);
+        jest.spyOn(store, 'cashOut').mockRejectedValueOnce(new Error('database down'));
+
+        await service.handleGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 150 });
+
+        const labels = { trigger: 'tick' };
+        expect(
+          await sample(registry, 'crash_auto_cashouts_total', { ...labels, result: 'failed' }),
+        ).toBe(1);
+        expect(
+          await sample(registry, 'crash_auto_cashouts_total', { ...labels, result: 'paid' }),
+        ).toBe(2);
+        expect(
+          await sample(registry, 'crash_auto_cashouts_total', { ...labels, result: 'skipped' }),
+        ).toBe(0);
+      });
+
+      it('adds up the auto-cashouts of consecutive passes', async () => {
+        const { placeBet, service, round, store, registry } = await setup(500);
+        const bob = await store.findOrCreate('bob', '5000', 'token-bob');
+        await placeBet('100', 150);
+        await placeBet('100', 200, 'bet-2', bob);
+        round().start(STARTED_AT);
+
+        await service.handleGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 150 });
+        await service.handleGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 200 });
+
+        expect(
+          await sample(registry, 'crash_auto_cashouts_total', { trigger: 'tick', result: 'paid' }),
+        ).toBe(2);
+      });
+
+      it('counts nothing for a tick with no bet due', async () => {
+        const { placeBet, service, round, registry } = await setup(500);
+        await placeBet('100', 150);
+        round().start(STARTED_AT);
+
+        await service.handleGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 149 });
+
+        expect(
+          await sample(registry, 'crash_auto_cashouts_total', { trigger: 'tick', result: 'paid' }),
+        ).toBeUndefined();
+      });
+    });
   });
 
   describe('after a restart', () => {
     it('pays auto-cashouts of a continued round from the bets in the store', async () => {
-      const { store, user, game, logger } = await setup(500);
+      const { store, user, game, logger, bettingMetrics } = await setup(500);
       const placed = await store.placeBet({
         userId: user.id,
         username: user.username,
@@ -536,7 +680,7 @@ describe('BettingService', () => {
         autoCashout: 150,
         idempotencyKey: 'before-restart',
       });
-      const restarted = new BettingService(store, game, logger);
+      const restarted = new BettingService(store, game, logger, bettingMetrics);
 
       await restarted.handleGameEvent({
         type: 'started',
@@ -550,12 +694,13 @@ describe('BettingService', () => {
     });
 
     it('logs a failure to reload the bets of a continued round', async () => {
-      const { store, game, logger, logged } = await setup(500);
+      const { store, game, logger, logged, bettingMetrics } = await setup(500);
       let notify = (_event: GameEvent) => undefined as void;
       const restarted = new BettingService(
         store,
         { ...game, subscribe: listener => (notify = listener) },
         logger,
+        bettingMetrics,
       );
       restarted.onModuleInit();
       jest.spyOn(store, 'findActiveBets').mockRejectedValueOnce(new Error('database down'));
@@ -643,6 +788,27 @@ describe('BettingService', () => {
       finishWrite();
       await draining;
       await expect(pending).resolves.toMatchObject({ balance: '4900' });
+    });
+
+    it('reports money operations in progress at scrape time', async () => {
+      const { placeBet, service, store, registry } = await setup();
+      let finishWrite = () => undefined as void;
+      const realPlaceBet = store.placeBet.bind(store);
+      jest
+        .spyOn(store, 'placeBet')
+        .mockImplementationOnce(
+          input => new Promise(resolve => (finishWrite = () => resolve(realPlaceBet(input)))),
+        );
+
+      expect(await sample(registry, 'crash_money_ops_in_flight')).toBe(0);
+
+      const pending = placeBet();
+      expect(await sample(registry, 'crash_money_ops_in_flight')).toBe(1);
+
+      finishWrite();
+      await pending;
+      await service.drain();
+      expect(await sample(registry, 'crash_money_ops_in_flight')).toBe(0);
     });
   });
 
@@ -738,10 +904,10 @@ describe('BettingService', () => {
     });
 
     it('settles bets left over from before a restart', async () => {
-      const { store, user, game, logger } = await setup(200);
+      const { store, user, game, logger, bettingMetrics } = await setup(200);
       const bet = await writeBet(store, user, 150);
       await store.markCrashed('round-1', at(200));
-      const restarted = new BettingService(store, game, logger);
+      const restarted = new BettingService(store, game, logger, bettingMetrics);
 
       await openRound(restarted, 'round-2');
 
@@ -903,6 +1069,135 @@ describe('BettingService', () => {
           err: expect.objectContaining({ message: 'database down' }),
         }),
       ]);
+    });
+
+    describe('metrics', () => {
+      /** Bets of round-1 (crashed at 2.00x): one wins at 1.50x, one loses; one of round-0 (interrupted) is refunded. */
+      async function writeOneOfEachResult(store: InMemoryStore, user: User) {
+        const bob = await store.findOrCreate('bob', '5000', 'token-bob');
+        const carol = await store.findOrCreate('carol', '5000', 'token-carol');
+        await writeBet(store, user, 150);
+        await writeBet(store, bob);
+        await store.markCrashed('round-1', at(200));
+        await store.create({ id: 'round-0', crashPoint: 300, bettingEndsAt: STARTED_AT });
+        await store.placeBet({
+          userId: carol.id,
+          username: carol.username,
+          roundId: 'round-0',
+          amount: '100',
+          autoCashout: null,
+          idempotencyKey: 'interrupted',
+        });
+      }
+
+      it('counts the bets of a sweep by result', async () => {
+        const { store, user, service, registry } = await setup(200);
+        await writeOneOfEachResult(store, user);
+
+        await openRound(service, 'round-2');
+
+        const name = 'crash_settlement_bets_total';
+        expect(await sample(registry, name, { result: 'won' })).toBe(1);
+        expect(await sample(registry, name, { result: 'lost' })).toBe(1);
+        expect(await sample(registry, name, { result: 'refunded' })).toBe(1);
+        expect(await sample(registry, name, { result: 'skipped' })).toBe(0);
+        expect(await sample(registry, name, { result: 'failed' })).toBe(0);
+      });
+
+      it('counts bets settled meanwhile by someone else as skipped', async () => {
+        const { store, user, service, registry } = await setup(200);
+        await writeBet(store, user);
+        jest.spyOn(store, 'refund').mockResolvedValueOnce(null);
+
+        await openRound(service, 'round-2');
+
+        const name = 'crash_settlement_bets_total';
+        expect(await sample(registry, name, { result: 'skipped' })).toBe(1);
+        expect(await sample(registry, name, { result: 'refunded' })).toBe(0);
+      });
+
+      it('counts failed bets and still counts the sweep as ok', async () => {
+        const { store, user, service, registry } = await setup(200);
+        const bob = await store.findOrCreate('bob', '5000', 'token-bob');
+        await writeBet(store, user);
+        await writeBet(store, bob);
+        await crash(store, service, 200);
+        jest.spyOn(store, 'markLost').mockRejectedValueOnce(new Error('database down'));
+
+        await openRound(service, 'round-2');
+
+        const name = 'crash_settlement_bets_total';
+        expect(await sample(registry, name, { result: 'failed' })).toBe(1);
+        expect(await sample(registry, name, { result: 'lost' })).toBe(1);
+        expect(await sample(registry, 'crash_settlement_sweeps_total', { outcome: 'ok' })).toBe(1);
+      });
+
+      it('adds up the bets of consecutive sweeps', async () => {
+        const { store, user, service, registry } = await setup(200);
+        await crash(store, service, 200);
+        await openRound(service, 'round-2');
+        await writeBet(store, user);
+
+        await openRound(service, 'round-3');
+
+        expect(await sample(registry, 'crash_settlement_bets_total', { result: 'lost' })).toBe(1);
+        expect(await sample(registry, 'crash_settlement_sweeps_total', { outcome: 'ok' })).toBe(2);
+      });
+
+      it('counts a sweep that could not read the unsettled bets as failed', async () => {
+        const { store, service, registry } = await setup(200);
+        jest.spyOn(store, 'findUnsettledBets').mockRejectedValueOnce(new Error('database down'));
+
+        await openRound(service, 'round-2');
+
+        const name = 'crash_settlement_sweeps_total';
+        expect(await sample(registry, name, { outcome: 'failed' })).toBe(1);
+        expect(await sample(registry, name, { outcome: 'ok' })).toBeUndefined();
+      });
+
+      it('reports no unsettled bets when the sweep settled everything it found', async () => {
+        const { store, user, service, registry } = await setup(200);
+        await writeOneOfEachResult(store, user);
+
+        await openRound(service, 'round-2');
+
+        expect(await sample(registry, 'crash_unsettled_bets')).toBe(0);
+      });
+
+      it('reports the bets the last sweep could not settle as unsettled', async () => {
+        const { store, user, service, registry } = await setup(200);
+        await writeOneOfEachResult(store, user);
+        jest.spyOn(store, 'markLost').mockRejectedValueOnce(new Error('database down'));
+
+        await openRound(service, 'round-2');
+
+        expect(await sample(registry, 'crash_unsettled_bets')).toBe(1);
+      });
+
+      it('reports no unsettled bets once a later sweep settles them', async () => {
+        const { store, user, service, registry } = await setup(200);
+        await writeBet(store, user);
+        jest.spyOn(store, 'markLost').mockRejectedValueOnce(new Error('database down'));
+        await crash(store, service, 200);
+        await openRound(service, 'round-2');
+
+        await openRound(service, 'round-3');
+
+        expect(await sample(registry, 'crash_unsettled_bets')).toBe(0);
+      });
+
+      it('keeps the last count of unsettled bets when a sweep cannot read them', async () => {
+        const { store, user, service, registry } = await setup(200);
+        await writeBet(store, user);
+        jest.spyOn(store, 'markLost').mockRejectedValueOnce(new Error('database down'));
+        await crash(store, service, 200);
+        await openRound(service, 'round-2');
+        jest.spyOn(store, 'findUnsettledBets').mockRejectedValueOnce(new Error('database down'));
+
+        await openRound(service, 'round-3');
+
+        expect(await sample(registry, 'crash_unsettled_bets')).toBe(1);
+      });
     });
   });
 });

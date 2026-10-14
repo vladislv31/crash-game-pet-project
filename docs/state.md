@@ -1,6 +1,6 @@
 # Development state
 
-**Current phase:** 3 — Observability (logging implemented, metrics next)
+**Current phase:** 3 — Observability (logs and metrics implemented, owner check pending)
 **Last updated:** 2026-10-13
 
 ## Done
@@ -51,7 +51,9 @@
     - unit tests 313/313, integration tests 31/31
   - Prometheus + Grafana in docker-compose (profile `observability`), provisioned from `ops/`, dashboard `Game server`: written by Claude, checked by the owner
   - README: how to run and observe, game overview, dashboard panels; load simulations recorded by the owner (idle baseline, CPU block, huge array, a million small objects)
-  - Next: the remaining metrics (request latency, broadcast, saturation, reliability)
+  - Remaining server metrics (ADR-0006), implemented by subagents on request (TDD) and reviewed by a separate agent; review fixes applied: request duration and results, connections, broadcast duration, buffered bytes, draining, money operations in flight, auto-cashout and settlement results, unsettled bets, round write failures, database pool; dashboard extended to 19 panels
+    - unit tests 363/363 (game-server), integration tests 31/31
+  - Next: Phase 3 is complete once the owner has checked the dashboard under load; then Phase 4 (load generator)
 
 ## Backlog (before experiments)
 

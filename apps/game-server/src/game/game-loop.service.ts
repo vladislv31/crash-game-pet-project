@@ -16,6 +16,8 @@ import { TickDelayTracker } from '../metrics/tick-delay';
 import { generateCrashPoint } from './crash-point';
 import { GameEvent, GameLoop } from './game-loop';
 import { Round } from './round';
+import { RoundMetrics } from './round.metrics';
+import type { RoundWriteOperation } from './round.metrics';
 import { ROUNDS_STORE } from './rounds.store';
 import type { RoundsStore } from './rounds.store';
 
@@ -43,6 +45,7 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
     @Inject(ROUNDS_STORE) private readonly rounds: RoundsStore,
     @Inject(APP_LOGGER) private readonly logger: AppLogger,
     private readonly metrics: Metrics,
+    private readonly roundMetrics: RoundMetrics,
   ) {
     this.loop = new GameLoop({
       tickMs: TICK_MS,
@@ -135,7 +138,7 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
         (
           this.roundEvents.get(event.roundId) ?? this.openRoundEvent(event.roundId, event.startedAt)
         ).set({ startedAt: iso(event.startedAt) });
-        this.persist(event.roundId, 'markStarted', () =>
+        this.persist(event.roundId, 'mark_started', () =>
           this.rounds.markStarted(event.roundId, event.startedAt),
         );
         return;
@@ -158,7 +161,12 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
 
   /** The crash point is stored before betting opens, so every bet's round can be settled later (ADR-0004). */
   private async storeRound(round: Round, bettingEndsAt: number): Promise<void> {
-    const write = this.rounds.create({ id: round.id, crashPoint: round.crashPoint, bettingEndsAt });
+    const write = this.rounds
+      .create({ id: round.id, crashPoint: round.crashPoint, bettingEndsAt })
+      .catch((error: unknown) => {
+        this.roundMetrics.writeFailed('create');
+        throw error;
+      });
     this.track(write);
     await write;
     this.preparedRounds.add(round.id);
@@ -174,11 +182,16 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
     return event;
   }
 
-  private persist(roundId: string, operation: string, write: () => Promise<void>): void {
+  private persist(
+    roundId: string,
+    operation: RoundWriteOperation,
+    write: () => Promise<void>,
+  ): void {
     this.track(
-      write().catch((error: unknown) =>
-        this.logger.error({ event: 'round.store_failed', roundId, operation, err: error }),
-      ),
+      write().catch((error: unknown) => {
+        this.roundMetrics.writeFailed(operation);
+        this.logger.error({ event: 'round.store_failed', roundId, operation, err: error });
+      }),
     );
   }
 
@@ -211,6 +224,7 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
         await write();
         return { stored: true, retries };
       } catch (error) {
+        this.roundMetrics.writeFailed('mark_crashed');
         this.logger.error({
           event: 'round.crash_write_failed',
           roundId,

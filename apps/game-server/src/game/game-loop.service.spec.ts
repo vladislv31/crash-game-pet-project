@@ -8,6 +8,7 @@ import { createTestLogger, LoggedEvent } from '../testing/test-logger';
 import * as crashPoint from './crash-point';
 import { GameEvent } from './game-loop';
 import { GameLoopService } from './game-loop.service';
+import { RoundMetrics } from './round.metrics';
 import { ROUNDS_STORE } from './rounds.store';
 
 const BETTING_MS = 15_000;
@@ -42,6 +43,7 @@ describe('GameLoopService', () => {
         { provide: ROUNDS_STORE, useValue: store },
         { provide: APP_LOGGER, useValue: logger },
         Metrics,
+        RoundMetrics,
       ],
     }).compile();
     app = moduleRef.createNestApplication({ logger: false });
@@ -303,6 +305,71 @@ describe('GameLoopService', () => {
     });
   });
 
+  describe('round write failures', () => {
+    async function writeFailures(): Promise<Record<string, number>> {
+      const metric = metrics.registry.getSingleMetric('crash_round_write_failures_total');
+      const { values } = (await metric?.get()) ?? { values: [] };
+      return Object.fromEntries(
+        values.map((entry): [string, number] => [String(entry.labels.operation), entry.value]),
+      );
+    }
+
+    it('counts a failed write of a new round', async () => {
+      jest.spyOn(store, 'create').mockRejectedValueOnce(new Error('database down'));
+
+      await start();
+
+      expect(await writeFailures()).toEqual({ create: 1 });
+    });
+
+    it('does not count a slow crash write that delays the next round', async () => {
+      let finishCrashWrite = () => undefined as void;
+      jest
+        .spyOn(store, 'markCrashed')
+        .mockImplementationOnce(() => new Promise<void>(resolve => (finishCrashWrite = resolve)));
+      await start();
+      await jest.advanceTimersByTimeAsync(BETTING_MS + RUNNING_MS);
+
+      finishCrashWrite();
+      await jest.advanceTimersByTimeAsync(5_000);
+
+      expect(store.rounds.size).toBe(2);
+      expect(await writeFailures()).toEqual({});
+    });
+
+    it('counts a failed write of the round start', async () => {
+      jest.spyOn(store, 'markStarted').mockRejectedValueOnce(new Error('database down'));
+      await start();
+
+      await jest.advanceTimersByTimeAsync(BETTING_MS);
+
+      expect(await writeFailures()).toEqual({ mark_started: 1 });
+    });
+
+    it('counts every failed attempt of the crash write', async () => {
+      const markCrashed = store.markCrashed.bind(store);
+      jest
+        .spyOn(store, 'markCrashed')
+        .mockRejectedValueOnce(new Error('database down'))
+        .mockRejectedValueOnce(new Error('database down'))
+        .mockImplementation(markCrashed);
+      await start();
+
+      await jest.advanceTimersByTimeAsync(BETTING_MS + RUNNING_MS + 1_000);
+
+      expect(await writeFailures()).toEqual({ mark_crashed: 2 });
+    });
+
+    it('counts nothing when every round write succeeds', async () => {
+      await start();
+
+      await jest.advanceTimersByTimeAsync(BETTING_MS + RUNNING_MS + 5_000);
+
+      expect(store.rounds.size).toBe(2);
+      expect(await writeFailures()).toEqual({});
+    });
+  });
+
   describe('round log', () => {
     it('logs one event per round once its crash is stored', async () => {
       await start();
@@ -445,7 +512,7 @@ describe('GameLoopService', () => {
         expect.objectContaining({
           level: 'error',
           roundId,
-          operation: 'markStarted',
+          operation: 'mark_started',
           err: expect.objectContaining({ message: 'database down' }),
         }),
       ]);

@@ -10,6 +10,7 @@ import { User } from '../users/user';
 import { Bet } from './bet';
 import { effectiveTarget, parseAutoCashout, parseBetAmount, payoutFor } from './bet-rules';
 import { BettingError } from './betting.errors';
+import { BettingMetrics } from './betting.metrics';
 import { BETS_STORE } from './bets.store';
 import type { BetsStore, BetWithBalance } from './bets.store';
 
@@ -54,7 +55,10 @@ export class BettingService implements OnModuleInit {
     @Inject(BETS_STORE) private readonly store: BetsStore,
     @Inject(GameLoopService) private readonly game: GameSource,
     @Inject(APP_LOGGER) private readonly logger: AppLogger,
-  ) {}
+    private readonly metrics: BettingMetrics,
+  ) {
+    this.metrics.trackInFlight(() => this.inFlight.size);
+  }
 
   onModuleInit(): void {
     this.game.subscribe(event => {
@@ -245,6 +249,7 @@ export class BettingService implements OnModuleInit {
     }
     event.set({ paid, failed });
     event.emit();
+    this.metrics.autoCashedOut(pass.trigger, { paid, skipped: due.length - paid - failed, failed });
   }
 
   /**
@@ -278,8 +283,10 @@ export class BettingService implements OnModuleInit {
           counts[result.value] += 1;
         }
       }
+      this.metrics.swept(counts);
     } catch (error) {
       event.fail(error);
+      this.metrics.sweepFailed();
     } finally {
       event.set(counts);
       event.emit();

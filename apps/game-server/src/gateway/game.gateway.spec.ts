@@ -2,22 +2,27 @@ import { EventEmitter } from 'node:events';
 import { IncomingMessage } from 'node:http';
 
 import type { ServerMessage } from '@crash/contracts';
+import { Registry } from 'prom-client';
 import { WebSocket } from 'ws';
 
+import { BettingMetrics } from '../betting/betting.metrics';
 import { BettingService } from '../betting/betting.service';
 import { GameEvent } from '../game/game-loop';
 import { crashTimeMs } from '../game/multiplier';
 import { Round } from '../game/round';
+import { Metrics } from '../metrics/metrics';
 import { InMemoryStore } from '../testing/in-memory-store';
 import { createTestLogger } from '../testing/test-logger';
 import { AuthService } from '../users/auth.service';
 import { GameGateway, GatewayGame } from './game.gateway';
+import { GatewayMetrics } from './gateway.metrics';
 
 const STARTED_AT = 1_000_000;
 
 class FakeSocket extends EventEmitter {
   readyState: number = WebSocket.OPEN;
   readonly sent: ServerMessage[] = [];
+  bufferedAmount = 0;
   closeCode: number | null = null;
 
   send(data: string): void {
@@ -51,6 +56,27 @@ function flush(): Promise<void> {
   return new Promise(resolve => setImmediate(resolve));
 }
 
+/** One sample of a metric on the registry; histogram samples are named with their suffix. */
+async function sample(
+  registry: Registry,
+  name: string,
+  labels: Record<string, string | number> = {},
+): Promise<number | undefined> {
+  const metric =
+    registry.getSingleMetric(name) ??
+    registry.getSingleMetric(name.replace(/_(bucket|sum|count)$/, ''));
+  if (!metric) {
+    throw new Error(`No metric ${name} on the registry`);
+  }
+  const { values } = await metric.get();
+  return values.find(
+    value =>
+      ('metricName' in value ? value.metricName : name) === name &&
+      Object.keys(value.labels).length === Object.keys(labels).length &&
+      Object.entries(labels).every(([key, label]) => value.labels[key] === label),
+  )?.value;
+}
+
 function setup(crashPoint = 500) {
   const store = new InMemoryStore(() => STARTED_AT - 1_000);
   const auth = new AuthService(store);
@@ -69,8 +95,9 @@ function setup(crashPoint = 500) {
     }),
   };
   const { logger, events: logged } = createTestLogger();
-  const betting = new BettingService(store, game, logger);
-  const gateway = new GameGateway(auth, betting, game, logger);
+  const metrics = new Metrics();
+  const betting = new BettingService(store, game, logger, new BettingMetrics(metrics));
+  const gateway = new GameGateway(auth, betting, game, logger, new GatewayMetrics(metrics));
   betting.onModuleInit();
   gateway.onModuleInit();
 
@@ -108,6 +135,7 @@ function setup(crashPoint = 500) {
     auth,
     betting,
     logged,
+    registry: metrics.registry,
     emitGameEvent,
     connect,
     userIdOf,
@@ -739,6 +767,326 @@ describe('GameGateway', () => {
           err: expect.objectContaining({ message: 'stuck' }),
         }),
       ]);
+    });
+  });
+  describe('metrics', () => {
+    type Setup = ReturnType<typeof setup>;
+
+    function connectPending(gateway: GameGateway, url = '/ws?token=never-checked-yet'): FakeSocket {
+      const socket = new FakeSocket();
+      gateway.handleConnection(socket as unknown as WebSocket, { url } as IncomingMessage);
+      return socket;
+    }
+
+    /** A clock for `performance.now()` that only moves when the test moves it. */
+    function fakeClock(): { advance(ms: number): void } {
+      let now = 0;
+      jest.spyOn(performance, 'now').mockImplementation(() => now);
+      return { advance: ms => (now += ms) };
+    }
+
+    describe('connections', () => {
+      it('counts authenticated sockets and sockets waiting for the token check', async () => {
+        const { connect, gateway, registry } = setup();
+        await connect('alice');
+        connectPending(gateway);
+
+        expect(await sample(registry, 'crash_ws_connections')).toBe(2);
+      });
+
+      it('stops counting a socket rejected for an unknown token', async () => {
+        const { connect, gateway, registry } = setup();
+        await connect('alice');
+        connectPending(gateway, '/ws?token=unknown');
+        await flush();
+
+        expect(await sample(registry, 'crash_ws_connections')).toBe(1);
+      });
+
+      it('stops counting a disconnected socket', async () => {
+        const { connect, gateway, registry } = setup();
+        const socket = await connect('alice');
+
+        gateway.handleDisconnect(socket as unknown as WebSocket);
+
+        expect(await sample(registry, 'crash_ws_connections')).toBe(0);
+      });
+
+      it('reports no connections after shutdown closed the sockets', async () => {
+        const { connect, gateway, registry } = setup();
+        await connect('alice');
+
+        await gateway.beforeApplicationShutdown();
+
+        expect(await sample(registry, 'crash_ws_connections')).toBe(0);
+      });
+    });
+
+    describe('request duration', () => {
+      it.each<
+        [string, (context: Setup, socket: FakeSocket) => Promise<void>, Record<string, string>]
+      >([
+        [
+          'an accepted bet',
+          async (_, socket) => {
+            socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+            await flush();
+          },
+          { type: 'bet', result: 'accepted' },
+        ],
+        [
+          'a retried bet',
+          async (_, socket) => {
+            socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+            await flush();
+            socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+            await flush();
+          },
+          { type: 'bet', result: 'replayed' },
+        ],
+        [
+          'an accepted cashout',
+          async ({ round }, socket) => {
+            socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+            await flush();
+            round.start(STARTED_AT);
+            jest.spyOn(Date, 'now').mockReturnValue(STARTED_AT + crashTimeMs(150));
+            socket.receive({ type: 'cashout', requestId: 'r2' });
+            await flush();
+          },
+          { type: 'cashout', result: 'accepted' },
+        ],
+        [
+          'a repeated cashout',
+          async ({ round }, socket) => {
+            socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+            await flush();
+            round.start(STARTED_AT);
+            jest.spyOn(Date, 'now').mockReturnValue(STARTED_AT + crashTimeMs(150));
+            socket.receive({ type: 'cashout', requestId: 'r2' });
+            await flush();
+            socket.receive({ type: 'cashout', requestId: 'r2' });
+            await flush();
+          },
+          { type: 'cashout', result: 'replayed' },
+        ],
+        [
+          'a business error',
+          async (_, socket) => {
+            socket.receive({ type: 'cashout', requestId: 'r1' });
+            await flush();
+          },
+          { type: 'cashout', result: 'cashout_closed' },
+        ],
+        [
+          'a validation error',
+          async (_, socket) => {
+            socket.receive({ type: 'bet', requestId: 'r1', amount: '5000' });
+            await flush();
+          },
+          { type: 'bet', result: 'validation_failed' },
+        ],
+        [
+          'an unparsable message',
+          async (_, socket) => {
+            socket.receive('not json');
+            await flush();
+          },
+          { type: 'invalid', result: 'invalid_message' },
+        ],
+        [
+          'a message of an unknown type',
+          async (_, socket) => {
+            socket.receive({ type: 'dance', requestId: 'r1' });
+            await flush();
+          },
+          { type: 'invalid', result: 'invalid_message' },
+        ],
+        [
+          'an unexpected failure',
+          async ({ betting }, socket) => {
+            jest.spyOn(betting, 'placeBet').mockRejectedValueOnce(new Error('boom'));
+            socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+            await flush();
+          },
+          { type: 'bet', result: 'internal_error' },
+        ],
+        [
+          'a request during shutdown',
+          async ({ gateway }, socket) => {
+            const shuttingDown = gateway.beforeApplicationShutdown();
+            socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+            await shuttingDown;
+            await flush();
+          },
+          { type: 'bet', result: 'unavailable' },
+        ],
+      ])('counts %s under its type and result', async (_, act, labels) => {
+        const context = setup(500);
+        const socket = await context.connect();
+
+        await act(context, socket);
+
+        expect(
+          await sample(context.registry, 'crash_ws_request_duration_seconds_count', labels),
+        ).toBe(1);
+      });
+
+      it('counts a message sent before the snapshot as unauthorized', async () => {
+        const { gateway, store, registry } = setup();
+        await store.findOrCreate('alice', '5000', 'token-alice');
+        const socket = connectPending(gateway, '/ws?token=token-alice');
+
+        socket.receive({ type: 'cashout', requestId: 'r1' });
+        await flush();
+
+        expect(
+          await sample(registry, 'crash_ws_request_duration_seconds_count', {
+            type: 'cashout',
+            result: 'unauthorized',
+          }),
+        ).toBe(1);
+      });
+
+      it('measures from receipt of the message until the response is sent', async () => {
+        const { connect, store, registry } = setup();
+        const socket = await connect();
+        const clock = fakeClock();
+        let finishWrite = () => undefined as void;
+        const realPlaceBet = store.placeBet.bind(store);
+        jest
+          .spyOn(store, 'placeBet')
+          .mockImplementationOnce(
+            input => new Promise(resolve => (finishWrite = () => resolve(realPlaceBet(input)))),
+          );
+
+        socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+        await flush();
+        clock.advance(30);
+        finishWrite();
+        await flush();
+
+        const labels = { type: 'bet', result: 'accepted' };
+        expect(await sample(registry, 'crash_ws_request_duration_seconds_sum', labels)).toBe(0.03);
+        expect(
+          await sample(registry, 'crash_ws_request_duration_seconds_bucket', {
+            ...labels,
+            le: 0.025,
+          }),
+        ).toBe(0);
+        expect(
+          await sample(registry, 'crash_ws_request_duration_seconds_bucket', {
+            ...labels,
+            le: 0.05,
+          }),
+        ).toBe(1);
+      });
+    });
+
+    describe('broadcast duration', () => {
+      it('observes each broadcast under the server message type', async () => {
+        const { connect, emitGameEvent, registry } = setup();
+        const alice = await connect('alice');
+        await connect('bob');
+
+        emitGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 123 });
+        emitGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 124 });
+        alice.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+        await flush();
+
+        expect(
+          await sample(registry, 'crash_broadcast_duration_seconds_count', { type: 'round:tick' }),
+        ).toBe(2);
+        expect(
+          await sample(registry, 'crash_broadcast_duration_seconds_count', { type: 'bet:placed' }),
+        ).toBe(1);
+      });
+
+      it('observes a broadcast with nobody connected', async () => {
+        const { emitGameEvent, registry } = setup();
+
+        emitGameEvent({ type: 'crashed', roundId: 'round-1', crashPoint: 186, crashedAt: 3 });
+
+        expect(
+          await sample(registry, 'crash_broadcast_duration_seconds_count', {
+            type: 'round:crashed',
+          }),
+        ).toBe(1);
+      });
+
+      it('measures the time to hand the message to every socket', async () => {
+        const { connect, emitGameEvent, registry } = setup();
+        const sockets = [await connect('alice'), await connect('bob')];
+        const clock = fakeClock();
+        for (const socket of sockets) {
+          jest.spyOn(socket, 'send').mockImplementation(() => clock.advance(2));
+        }
+
+        emitGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 123 });
+
+        expect(
+          await sample(registry, 'crash_broadcast_duration_seconds_sum', { type: 'round:tick' }),
+        ).toBe(0.004);
+      });
+    });
+
+    describe('buffered bytes', () => {
+      it('reports the sum and the maximum queued over open sockets', async () => {
+        const { connect, gateway, registry } = setup();
+        const alice = await connect('alice');
+        const bob = await connect('bob');
+        connectPending(gateway);
+        alice.bufferedAmount = 100;
+        bob.bufferedAmount = 300;
+
+        expect(await sample(registry, 'crash_ws_buffered_bytes')).toBe(400);
+        expect(await sample(registry, 'crash_ws_buffered_bytes_max')).toBe(300);
+      });
+
+      it('reports zero with no sockets', async () => {
+        const { registry } = setup();
+
+        expect(await sample(registry, 'crash_ws_buffered_bytes')).toBe(0);
+        expect(await sample(registry, 'crash_ws_buffered_bytes_max')).toBe(0);
+      });
+
+      it('ignores disconnected sockets', async () => {
+        const { connect, gateway, registry } = setup();
+        const alice = await connect('alice');
+        const bob = await connect('bob');
+        alice.bufferedAmount = 100;
+        bob.bufferedAmount = 300;
+
+        gateway.handleDisconnect(bob as unknown as WebSocket);
+
+        expect(await sample(registry, 'crash_ws_buffered_bytes')).toBe(100);
+        expect(await sample(registry, 'crash_ws_buffered_bytes_max')).toBe(100);
+      });
+    });
+
+    describe('draining', () => {
+      it('is 0 while the server runs', async () => {
+        const { connect, registry } = setup();
+        await connect('alice');
+
+        expect(await sample(registry, 'crash_draining')).toBe(0);
+      });
+
+      it('is 1 as soon as shutdown starts', async () => {
+        const { gateway, betting, registry } = setup();
+        let finishDrain = () => undefined as void;
+        jest
+          .spyOn(betting, 'drain')
+          .mockImplementation(() => new Promise<void>(resolve => (finishDrain = resolve)));
+
+        const shuttingDown = gateway.beforeApplicationShutdown();
+        await flush();
+
+        expect(await sample(registry, 'crash_draining')).toBe(1);
+        finishDrain();
+        await shuttingDown;
+        expect(await sample(registry, 'crash_draining')).toBe(1);
+      });
     });
   });
 });
