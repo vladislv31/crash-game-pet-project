@@ -234,9 +234,10 @@ Measured separately with `node --trace-gc`: creating the million objects takes 3
 
 Phase 6 experiments, each with a full write-up in [docs/experiments](docs/experiments) (setup, results, conclusions) and a summary here.
 
-| #   | Experiment                                              | Status                             | Result |
-| --- | ------------------------------------------------------- | ---------------------------------- | ------ |
-| 1   | Max connections before p99 grows                        | needs the load generator (Phase 4) |        |
-| 2   | Several instances behind a load balancer, Redis pub/sub | needs horizontal scaling (Phase 5) |        |
-| 3   | Kill an instance mid-round: no lost bets or payouts     | runnable on one instance           |        |
-| 4   | Concurrent duplicate cashouts: paid exactly once        | runnable                           |        |
+| #   | Experiment                                                              | Status                             | Result |
+| --- | ----------------------------------------------------------------------- | ---------------------------------- | ------ |
+| 1   | Max connections before p99 grows                                        | needs the load generator (Phase 4) |        |
+| 2   | Several instances behind a load balancer, Redis pub/sub                 | needs horizontal scaling (Phase 5) |        |
+| 3   | Kill an instance mid-round: no lost bets or payouts                     | runnable on one instance           |        |
+| 4   | Concurrent duplicate cashouts: paid exactly once                        | runnable                           |        |
+| 5   | Wallet concurrency: isolation levels and row locks in PostgreSQL (MVCC) | runnable                           |        |

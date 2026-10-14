@@ -48,3 +48,4 @@
 2. Multi-instance + LB + Redis pub/sub
 3. Kill an instance mid-round → no lost bets/payouts
 4. Concurrent duplicate cashouts → paid exactly once
+5. Wallet concurrency in PostgreSQL (goal: learn MVCC and locking): run the bet and cashout paths under each isolation level (Read Committed, Repeatable Read, Serializable) and each locking strategy (conditional `UPDATE … WHERE status = 'ACTIVE'` only, `SELECT … FOR UPDATE`, `FOR NO KEY UPDATE`, `SKIP LOCKED` / `NOWAIT`, optimistic version column, advisory locks); find where isolation breaks (lost updates, double payouts, write skew, serialization failures that need retries) and where throughput or latency suffers (lock waits, contention on one hot user or bet, deadlocks)

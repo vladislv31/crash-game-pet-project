@@ -60,7 +60,7 @@
 - WebSocket hardening: `maxPayload`, per-socket message rate limit, ignore messages before auth, ping/pong to drop dead connections
 - Rate limit `POST /auth/login` (every new username creates a user)
 - Partial index on `bets` for `status = 'ACTIVE'` (settlement sweep scans the table)
-- Reconciliation check: `users.balance` equals the sum of `ledger_entries` per user
+- Reconciliation check: `users.balance` equals the sum of `ledger_entries` per user; each bet has exactly one `BET` entry, `CASHED_OUT` exactly one `WIN` equal to its payout, `VOID` exactly one `REFUND`, `LOST` neither; payout = amount × multiplier, never above max win. Reports mismatches as an error log event and a metric
 - End-to-end WebSocket test through the real app (login → bet → cashout)
 - CI: lint, unit tests, integration tests with PostgreSQL
 
