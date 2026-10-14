@@ -17,6 +17,7 @@ A multiplayer crash game (iGaming) over WebSockets. It comes with a test dashboa
 - `docs/state.md`: current progress. **Read it at session start and update it at session end.**
 - `docs/adr/`: architecture decision records (`NNNN-title.md`, template in `0000-template.md`)
 - `docs/experiments/`: experiment write-ups (setup, results, conclusions)
+- `README.md`: how to run and observe the project; load simulations (what was hardcoded, expected, observed, conclusion) and a summary of each experiment
 
 ## Commands
 

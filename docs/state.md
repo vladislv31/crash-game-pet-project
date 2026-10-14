@@ -50,6 +50,7 @@
     - `crash_tick_delay_seconds`: how late each tick fired, measured in `GameLoopService` (game loop unchanged)
     - unit tests 313/313, integration tests 31/31
   - Prometheus + Grafana in docker-compose (profile `observability`), provisioned from `ops/`, dashboard `Game server`: written by Claude, checked by the owner
+  - README: how to run and observe, game overview, dashboard panels; load simulations recorded by the owner (idle baseline, CPU block, huge array, a million small objects)
   - Next: the remaining metrics (request latency, broadcast, saturation, reliability)
 
 ## Backlog (before experiments)
