@@ -161,12 +161,17 @@ export interface LoadRange {
   max: number;
 }
 
+/** Holds `bots` for `durationSeconds`; only the last step may run until stopped (`null`). */
+export interface LoadStep {
+  bots: number;
+  durationSeconds: number | null;
+}
+
 /** Multipliers are in hundredths; probabilities and shares are fractions from 0 to 1. */
 export interface LoadScenario {
   name: string;
-  bots: number;
+  steps: LoadStep[];
   rampPerSecond: number;
-  durationSeconds: number | null;
   betProbability: number;
   betAmount: LoadRange;
   autoCashoutShare: number;
@@ -179,6 +184,10 @@ export interface LoadRunStatus {
   scenario: LoadScenario;
   state: 'running' | 'stopped';
   startedAt: number;
+  /** Index into `scenario.steps` of the step in progress (or the last one reached). */
+  stepIndex: number;
+  /** Bots the current step aims for. */
+  botsTarget: number;
   botsStarted: number;
   botsConnected: number;
 }

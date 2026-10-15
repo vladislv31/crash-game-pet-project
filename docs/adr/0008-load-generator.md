@@ -21,18 +21,17 @@ Phase 6 experiments need many players at once: thousands of connections for expe
 
 ### Scenario
 
-| Field                      | Meaning                                                                                                          |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `bots`                     | number of bots, 1–20 000                                                                                         |
-| `rampPerSecond`            | bots connecting per second                                                                                       |
-| `durationSeconds`          | stop on its own after this long; `null` runs until stopped                                                       |
-| `betProbability`           | chance a bot bets in a round, 0–1                                                                                |
-| `betAmount` `{ min, max }` | whole amounts within the bet limits (100–1 000)                                                                  |
-| `autoCashoutShare`         | share of bets placed with an auto-cashout target, 0–1; the rest cash out manually                                |
-| `target` `{ min, max }`    | cash-out multiplier in hundredths, drawn per bet, for both auto and manual cash-outs                             |
-| `duplicateCashouts`        | identical cashout requests (same `requestId`) a manual bot sends at once; 1 is normal play, more is experiment 4 |
+| Field                      | Meaning                                                                                                                                                                                                                                                                                                                                               |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `steps`                    | the load over time: `[{ bots, durationSeconds }]`, 1–20 steps of 1–20 000 bots each; a plain run is one step. Each step holds its bot count for its duration; only the last may have `durationSeconds: null`, running until stopped. Between steps the count moves at `rampPerSecond`: up by connecting new bots, down by disconnecting the last ones |
+| `rampPerSecond`            | bots connecting (or disconnecting) per second when the count changes                                                                                                                                                                                                                                                                                  |
+| `betProbability`           | chance a bot bets in a round, 0–1                                                                                                                                                                                                                                                                                                                     |
+| `betAmount` `{ min, max }` | whole amounts within the bet limits (100–1 000)                                                                                                                                                                                                                                                                                                       |
+| `autoCashoutShare`         | share of bets placed with an auto-cashout target, 0–1; the rest cash out manually                                                                                                                                                                                                                                                                     |
+| `target` `{ min, max }`    | cash-out multiplier in hundredths, drawn per bet, for both auto and manual cash-outs                                                                                                                                                                                                                                                                  |
+| `duplicateCashouts`        | identical cashout requests (same `requestId`) a manual bot sends at once; 1 is normal play, more is experiment 4                                                                                                                                                                                                                                      |
 
-Presets in the repo: `steady` (100 bots), `ramp` (1 000 bots at 10/s), `spike` (2 000 bots at 500/s), `duplicate-cashouts` (50 bots, manual only, 10 copies per cashout).
+Presets in the repo: `steady` (100 bots), `ramp` (1 000 bots at 10/s), `spike` (2 000 bots at 500/s), `steps` (500, 1 000, 2 000, 4 000 bots, 5 minutes each, for experiment 1), `duplicate-cashouts` (50 bots, manual only, 10 copies per cashout).
 
 ### Bots
 
@@ -48,7 +47,12 @@ Presets in the repo: `steady` (100 bots), `ramp` (1 000 bots at 10/s), `spike` (
 - Connections open, connect time, disconnects and reconnects, errors by code.
 - **The generator's own event loop lag.** When it rises, the generator is the bottleneck and the run's latencies are not trustworthy.
 
-Metric names start with `loadgen_`. After a money run, `npm run reconcile -w game-server` (ADR-0007) gives the verdict.
+Metric names start with `loadgen_`.
+
+### Grafana annotations
+
+- Each run becomes a region annotation in Grafana (`GRAFANA_URL`, default `http://localhost:3001`, anonymous admin in local compose): created when the run starts, closed when it stops, tagged `load-run`, the run id and the scenario name. Each step of a multi-step run adds a point annotation tagged `load-step`. The Game server dashboard shows both, so every chart says which run and step it is looking at.
+- Annotations are a convenience: when Grafana is down or answers with an error, the run goes on and the failure is logged. After a money run, `npm run reconcile -w game-server` (ADR-0007) gives the verdict.
 
 ## Alternatives
 

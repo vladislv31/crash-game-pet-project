@@ -44,6 +44,8 @@ Buckets: request duration 1, 2.5, 5, 10, 25, 50, 100, 250, 500 ms, 1, 2.5, 5 s (
 
 What the gateway, betting and database metrics show:
 
+- Requests follow RED (rate, errors, duration), all from `crash_ws_request_duration_seconds`: rate over a 10 s window, so a betting burst is not flattened; outcomes in three classes by `result`: **success** (`accepted`, `replayed`), **rejected** (a business answer such as `betting_closed` or `insufficient_funds`, like HTTP 4xx) and **failed** (`internal_error`, `unavailable`, like HTTP 5xx); the failed share should stay at 0.
+
 - Request duration starts when the message handler runs, so time a message waits in the socket or behind a busy event loop is not in it; event loop lag and the client-side p99 (Phase 4) cover that.
 - `ws.send()` only queues a frame, so broadcast duration is the CPU cost of a broadcast, not its delivery; buffered bytes show the delivery side.
 - Operations in flight and waiting pool requests rise when the database is the bottleneck while event loop lag stays flat; the reverse means CPU or broadcast.

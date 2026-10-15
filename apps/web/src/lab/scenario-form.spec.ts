@@ -4,9 +4,8 @@ import { fieldErrors, formatLatency, toForm, toScenario } from './scenario-form'
 
 const SCENARIO: LoadScenario = {
   name: 'steady',
-  bots: 100,
+  steps: [{ bots: 100, durationSeconds: null }],
   rampPerSecond: 20,
-  durationSeconds: null,
   betProbability: 0.8,
   betAmount: { min: 100, max: 500 },
   autoCashoutShare: 0.5,
@@ -18,9 +17,8 @@ describe('toForm', () => {
   it('shows multipliers as x values and shares as percents', () => {
     expect(toForm(SCENARIO)).toEqual({
       name: 'steady',
-      bots: '100',
+      steps: '100',
       rampPerSecond: '20',
-      durationSeconds: '',
       betProbability: '80',
       betAmountMin: '100',
       betAmountMax: '500',
@@ -31,8 +29,14 @@ describe('toForm', () => {
     });
   });
 
-  it('shows a fixed duration', () => {
-    expect(toForm({ ...SCENARIO, durationSeconds: 60 }).durationSeconds).toBe('60');
+  it('shows steps as bots x seconds, the open-ended last one as bots only', () => {
+    const steps = [
+      { bots: 500, durationSeconds: 300 },
+      { bots: 1_000, durationSeconds: 60 },
+      { bots: 2_000, durationSeconds: null },
+    ];
+
+    expect(toForm({ ...SCENARIO, steps }).steps).toBe('500x300, 1000x60, 2000');
   });
 });
 
@@ -41,8 +45,23 @@ describe('toScenario', () => {
     expect(toScenario(toForm(SCENARIO))).toEqual(SCENARIO);
   });
 
-  it('reads an empty duration as running until stopped', () => {
-    expect(toScenario({ ...toForm(SCENARIO), durationSeconds: '  ' }).durationSeconds).toBeNull();
+  it('reads steps, with spaces and × allowed', () => {
+    expect(toScenario({ ...toForm(SCENARIO), steps: ' 500 x 300 ,1000×60, 2000 ' }).steps).toEqual([
+      { bots: 500, durationSeconds: 300 },
+      { bots: 1_000, durationSeconds: 60 },
+      { bots: 2_000, durationSeconds: null },
+    ]);
+  });
+
+  it('turns steps it cannot read into text, for the generator to reject', () => {
+    expect(toScenario({ ...toForm(SCENARIO), steps: '500x300, lots' }).steps).toEqual([
+      { bots: 500, durationSeconds: 300 },
+      'lots',
+    ]);
+  });
+
+  it('sends no steps for an empty field', () => {
+    expect(toScenario({ ...toForm(SCENARIO), steps: ' ' }).steps).toEqual([]);
   });
 
   it('rounds percents and multipliers the way they are shown', () => {
@@ -56,9 +75,9 @@ describe('toScenario', () => {
   });
 
   it('passes text that is not a number on as it is, for the generator to reject', () => {
-    const scenario = toScenario({ ...toForm(SCENARIO), bots: 'many', durationSeconds: 'soon' });
+    const scenario = toScenario({ ...toForm(SCENARIO), rampPerSecond: 'fast', betAmountMin: '' });
 
-    expect(scenario).toMatchObject({ bots: 'many', durationSeconds: 'soon' });
+    expect(scenario).toMatchObject({ rampPerSecond: 'fast', betAmount: { min: '' } });
   });
 });
 
@@ -66,17 +85,24 @@ describe('fieldErrors', () => {
   it('puts each error next to its form field, in words', () => {
     expect(
       fieldErrors({
-        bots: 'too_high',
+        rampPerSecond: 'too_high',
         'betAmount.min': 'too_low',
         'target.max': 'invalid',
-        durationSeconds: 'too_low',
       }),
     ).toEqual({
-      bots: 'Too high',
+      rampPerSecond: 'Too high',
       betAmountMin: 'Too low',
       targetMax: 'Not a valid number',
-      durationSeconds: 'Too low',
     });
+  });
+
+  it('names the step an error belongs to', () => {
+    expect(fieldErrors({ 'steps.1.bots': 'too_high' })).toEqual({ steps: 'Step 2 bots: too high' });
+    expect(fieldErrors({ 'steps.0.durationSeconds': 'required' })).toEqual({
+      steps: 'Step 1 seconds: needed, only the last step can run until stopped',
+    });
+    expect(fieldErrors({ 'steps.2': 'invalid' })).toEqual({ steps: 'Step 3: not bots x seconds' });
+    expect(fieldErrors({ steps: 'too_low' })).toEqual({ steps: 'Add at least one step' });
   });
 
   it('shows a reversed range at its upper end', () => {

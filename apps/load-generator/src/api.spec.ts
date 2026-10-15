@@ -59,10 +59,10 @@ describe('handleRequest', () => {
     const response = await call({
       method: 'POST',
       path: '/run',
-      body: JSON.stringify({ ...PRESETS.steady, bots: 0 }),
+      body: JSON.stringify({ ...PRESETS.steady, rampPerSecond: 0 }),
     });
 
-    expect(response).toEqual({ status: 422, json: { errors: { bots: 'too_low' } } });
+    expect(response).toEqual({ status: 422, json: { errors: { rampPerSecond: 'too_low' } } });
     expect(started).toEqual([]);
   });
 
@@ -111,6 +111,8 @@ describe('handleRequest', () => {
       scenario: PRESETS.steady!,
       state: 'running',
       startedAt: 0,
+      stepIndex: 0,
+      botsTarget: 100,
       botsStarted: 5,
       botsConnected: 4,
     };

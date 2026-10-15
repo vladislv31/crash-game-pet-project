@@ -1,6 +1,6 @@
 import type { BotRecorder } from './bot';
-import { Connection, RunController } from './run-controller';
-import { PRESETS, Scenario } from './scenario';
+import { Connection, RunAnnotator, RunController } from './run-controller';
+import { PRESETS, Scenario, Step } from './scenario';
 
 class FakeConnection implements Connection {
   started = false;
@@ -24,11 +24,25 @@ class FakeConnection implements Connection {
   }
 }
 
+class FakeAnnotator implements RunAnnotator {
+  readonly calls: string[] = [];
+  runStarted(run: { runId: string; scenario: Scenario }): void {
+    this.calls.push(`run ${run.runId} ${run.scenario.name} at ${Date.now()}`);
+  }
+  stepStarted(step: { runId: string; index: number; count: number; bots: number }): void {
+    this.calls.push(`step ${step.index + 1}/${step.count} ${step.bots} at ${Date.now()}`);
+  }
+  runEnded(runId: string): void {
+    this.calls.push(`end ${runId} at ${Date.now()}`);
+  }
+}
+
 function setup() {
   jest.useFakeTimers({ now: 0 });
   const connections: FakeConnection[] = [];
   const logged: Record<string, unknown>[] = [];
   const shared: BotRecorder = { request: () => undefined, tick: () => undefined };
+  const annotator = new FakeAnnotator();
   const controller = new RunController({
     createConnection: (username, recorder) => {
       const connection = new FakeConnection(username, recorder);
@@ -39,12 +53,24 @@ function setup() {
     newRunId: () => 'abc123',
     now: () => Date.now(),
     logger: { info: event => logged.push(event), error: event => logged.push(event) },
+    annotator,
   });
-  return { controller, connections, logged };
+  return { controller, connections, logged, annotator };
 }
 
-function scenario(changes: Partial<Scenario> = {}): Scenario {
-  return { ...PRESETS.steady!, bots: 10, rampPerSecond: 10, ...changes };
+function scenario(
+  changes: Partial<Scenario> & { bots?: number; durationSeconds?: number | null } = {},
+): Scenario {
+  const { bots = 10, durationSeconds = null, ...rest } = changes;
+  return { ...PRESETS.steady!, steps: [{ bots, durationSeconds }], rampPerSecond: 10, ...rest };
+}
+
+function stepped(steps: Step[], rampPerSecond = 100): Scenario {
+  return { ...PRESETS.steady!, name: 'steps', steps, rampPerSecond };
+}
+
+function active(connections: FakeConnection[]): FakeConnection[] {
+  return connections.filter(connection => !connection.stopped);
 }
 
 describe('RunController', () => {
@@ -152,6 +178,8 @@ describe('RunController', () => {
       scenario: scenario({ bots: 10, rampPerSecond: 10 }),
       state: 'running',
       startedAt: 0,
+      stepIndex: 0,
+      botsTarget: 10,
       botsStarted: 4,
       botsConnected: 3,
     });
@@ -190,7 +218,8 @@ describe('RunController', () => {
         event: 'load_run',
         runId: 'abc123',
         scenario: 'steady',
-        bots: 2,
+        steps: [{ bots: 2, durationSeconds: null }],
+        stepsReached: 1,
         botsStarted: 2,
         requests: { 'bet accepted': 2, 'cashout replayed': 1 },
         outcome: 'stopped',
@@ -216,6 +245,7 @@ describe('RunController', () => {
       newRunId: () => 'abc123',
       now: () => Date.now(),
       logger: { info: () => undefined, error: () => undefined },
+      annotator: new FakeAnnotator(),
     });
     controller.start(scenario({ bots: 1, rampPerSecond: 100 }));
     jest.advanceTimersByTime(100);
@@ -233,5 +263,143 @@ describe('RunController', () => {
     jest.advanceTimersByTime(1_000);
 
     expect(logged).toEqual([expect.objectContaining({ outcome: 'finished', durationMs: 1_000 })]);
+  });
+
+  describe('steps', () => {
+    it('holds each step for its duration, then moves to the next', () => {
+      const { controller, connections } = setup();
+      controller.start(
+        stepped([
+          { bots: 3, durationSeconds: 1 },
+          { bots: 6, durationSeconds: null },
+        ]),
+      );
+
+      jest.advanceTimersByTime(900);
+      expect(active(connections)).toHaveLength(3);
+      expect(controller.status()).toMatchObject({ stepIndex: 0, botsTarget: 3 });
+
+      jest.advanceTimersByTime(300);
+      expect(active(connections)).toHaveLength(6);
+      expect(controller.status()).toMatchObject({ stepIndex: 1, botsTarget: 6 });
+    });
+
+    it('disconnects the last bots when a step goes down', () => {
+      const { controller, connections } = setup();
+      controller.start(
+        stepped([
+          { bots: 6, durationSeconds: 1 },
+          { bots: 2, durationSeconds: null },
+        ]),
+      );
+
+      jest.advanceTimersByTime(1_200);
+
+      expect(active(connections).map(connection => connection.username)).toEqual([
+        'bot_abc123_1',
+        'bot_abc123_2',
+      ]);
+      expect(controller.botCounts()).toEqual({ target: 2, connected: 2 });
+    });
+
+    it('moves down at the ramp rate', () => {
+      const { controller, connections } = setup();
+      controller.start(
+        stepped(
+          [
+            { bots: 10, durationSeconds: 2 },
+            { bots: 4, durationSeconds: null },
+          ],
+          10,
+        ),
+      );
+
+      jest.advanceTimersByTime(2_150);
+      const before = active(connections).length;
+      jest.advanceTimersByTime(300);
+
+      expect(before - active(connections).length).toBe(3);
+    });
+
+    it('names bots started after a step down anew', () => {
+      const { controller, connections } = setup();
+      controller.start(
+        stepped([
+          { bots: 2, durationSeconds: 1 },
+          { bots: 1, durationSeconds: 1 },
+          { bots: 2, durationSeconds: null },
+        ]),
+      );
+
+      jest.advanceTimersByTime(2_200);
+
+      expect(active(connections).map(connection => connection.username)).toEqual([
+        'bot_abc123_1',
+        'bot_abc123_3',
+      ]);
+      expect(controller.status()?.botsStarted).toBe(3);
+    });
+
+    it('finishes after the last step', () => {
+      const { controller, logged } = setup();
+      controller.start(
+        stepped([
+          { bots: 2, durationSeconds: 1 },
+          { bots: 3, durationSeconds: 1 },
+        ]),
+      );
+
+      jest.advanceTimersByTime(1_999);
+      expect(controller.status()?.state).toBe('running');
+
+      jest.advanceTimersByTime(1);
+      expect(controller.status()?.state).toBe('stopped');
+      expect(logged).toEqual([expect.objectContaining({ outcome: 'finished', durationMs: 2_000 })]);
+    });
+
+    it('logs the steps of the run', () => {
+      const { controller, logged } = setup();
+      const steps = [
+        { bots: 2, durationSeconds: 1 },
+        { bots: 3, durationSeconds: null },
+      ];
+      controller.start(stepped(steps));
+      jest.advanceTimersByTime(1_500);
+
+      controller.stop();
+
+      expect(logged).toEqual([expect.objectContaining({ steps, stepsReached: 2 })]);
+    });
+  });
+
+  describe('annotations', () => {
+    it('marks the run from start to stop', () => {
+      const { controller, annotator } = setup();
+      controller.start(scenario());
+      jest.advanceTimersByTime(5_000);
+
+      controller.stop();
+
+      expect(annotator.calls).toEqual(['run abc123 steady at 0', 'end abc123 at 5000']);
+    });
+
+    it('marks every step of a run with several steps', () => {
+      const { controller, annotator } = setup();
+      controller.start(
+        stepped([
+          { bots: 2, durationSeconds: 1 },
+          { bots: 3, durationSeconds: 1 },
+        ]),
+      );
+
+      jest.advanceTimersByTime(2_000);
+
+      expect(annotator.calls).toEqual([
+        'run abc123 steps at 0',
+        'step 1/2 2 at 0',
+        'step 2/2 3 at 1000',
+        'end abc123 at 2000',
+      ]);
+    });
   });
 });

@@ -15,9 +15,8 @@ const GRAFANA_URL = 'http://localhost:3001/d/game-server';
 
 const FIELDS: { key: keyof ScenarioForm; label: string; hint?: string }[] = [
   { key: 'name', label: 'Name' },
-  { key: 'bots', label: 'Bots' },
+  { key: 'steps', label: 'Steps: bots x seconds', hint: '500x300, 1000x300, 2000' },
   { key: 'rampPerSecond', label: 'Bots per second' },
-  { key: 'durationSeconds', label: 'Duration, s', hint: 'empty: until stopped' },
   { key: 'betProbability', label: 'Bet chance, %' },
   { key: 'betAmountMin', label: 'Bet from' },
   { key: 'betAmountMax', label: 'Bet to' },
@@ -138,9 +137,13 @@ function RunReport({ report }: { report: LoadRunReport | null }) {
         {run.scenario.name} · {run.runId} · {run.state}
       </h2>
       <dl>
-        <dt>Bots started / connected</dt>
+        <dt>Step</dt>
         <dd>
-          {run.botsStarted} / {run.botsConnected} of {run.scenario.bots}
+          {run.stepIndex + 1} of {run.scenario.steps.length}: {run.botsTarget} bots
+        </dd>
+        <dt>Bots connected / started</dt>
+        <dd>
+          {run.botsConnected} / {run.botsStarted}
         </dd>
         <dt>Requests per second</dt>
         <dd>{live.requestsPerSecond.toFixed(1)}</dd>

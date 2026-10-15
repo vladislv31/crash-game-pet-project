@@ -1,6 +1,6 @@
 # Development state
 
-**Current phase:** 4 — Load generator and test dashboard (implemented, first live run pending)
+**Current phase:** 4 — Load generator and test dashboard (implemented, first runs done)
 **Last updated:** 2026-10-13
 
 ## Done
@@ -64,7 +64,9 @@
   - generator API types in `@crash/contracts`
   - `apps/web`: test dashboard at `/lab` (presets, scenario form with 422 errors per field, start/stop, live numbers); Vite proxies `/generator`
   - Prometheus scrapes the generator; dashboard section Players, server panels filtered to the game server
-  - not run end to end yet: needs the game server, the generator and the web client running together
+  - scenarios as steps (`bots x seconds`, ramping up and down between them; preset `steps` for experiment 1); every run and step marked as a Grafana annotation
+  - dashboard: request rate and outcomes (success, rejected, failed) and failed share
+  - first live run by the owner: the `spike` preset failed bets with `internal_error` because the 10-connection database pool timed out after 1 s; money stayed safe (failed bets roll back). Next: a configurable pool size to measure where the pool stops being the limit
 
 ## Backlog (before experiments)
 

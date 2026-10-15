@@ -6,6 +6,7 @@ import { WebSocket } from 'ws';
 import { Bot, BotRecorder } from './bot';
 import { BotConnection } from './bot-connection';
 import { LiveStats } from './live-stats';
+import { GrafanaAnnotator } from './grafana-annotator';
 import { createLogger, stdoutDestination } from './logger';
 import { GeneratorMetrics } from './metrics';
 import { RunController } from './run-controller';
@@ -15,6 +16,7 @@ const LIVE_WINDOW_MS = 10_000;
 
 const gameServer = new URL(process.env.GAME_SERVER_URL ?? 'http://localhost:3000');
 const port = Number(process.env.PORT ?? 3100);
+const grafana = new URL(process.env.GRAFANA_URL ?? 'http://localhost:3001');
 const logger = createLogger(process.env, stdoutDestination());
 // Epoch milliseconds with sub-millisecond precision: comparable with the server's round times.
 const now = () => performance.timeOrigin + performance.now();
@@ -73,6 +75,7 @@ const runs = new RunController({
   newRunId: () => randomBytes(3).toString('hex'),
   now,
   logger,
+  annotator: new GrafanaAnnotator({ url: grafana, fetch, now: Date.now, logger }),
 });
 metrics.trackBots(() => runs.botCounts());
 

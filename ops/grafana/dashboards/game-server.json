@@ -4,7 +4,7 @@
   "tags": ["crash-game"],
   "timezone": "browser",
   "schemaVersion": 41,
-  "version": 2,
+  "version": 3,
   "editable": true,
   "refresh": "5s",
   "time": {
@@ -12,7 +12,38 @@
     "to": "now"
   },
   "annotations": {
-    "list": []
+    "list": [
+      {
+        "name": "Load runs",
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "iconColor": "purple",
+        "target": {
+          "type": "tags",
+          "tags": ["load-run"],
+          "matchAny": true,
+          "limit": 100
+        }
+      },
+      {
+        "name": "Load steps",
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "iconColor": "orange",
+        "target": {
+          "type": "tags",
+          "tags": ["load-step"],
+          "matchAny": true,
+          "limit": 500
+        }
+      }
+    ]
   },
   "templating": {
     "list": []
@@ -515,6 +546,233 @@
     {
       "id": 12,
       "type": "timeseries",
+      "title": "Requests per second",
+      "description": "Bet and cash-out messages answered per second (RED: rate), over 10 s, so a burst is not flattened by a long window. Prometheus scrapes every 5 s, so one request alone shows as 0.1.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 27
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum by (type) (rate(crash_ws_request_duration_seconds_count[10s]))",
+          "legendFormat": "{{type}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "B",
+          "expr": "sum(rate(crash_ws_request_duration_seconds_count[10s]))",
+          "legendFormat": "total"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Outcomes per second",
+      "description": "success: accepted or replayed; rejected: a business answer such as betting_closed or insufficient_funds (like HTTP 4xx); failed: internal_error or unavailable, the server could not do it (like HTTP 5xx).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 27
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum(rate(crash_ws_request_duration_seconds_count{result=~\"accepted|replayed\"}[10s]))",
+          "legendFormat": "success"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "B",
+          "expr": "sum(rate(crash_ws_request_duration_seconds_count{result!~\"accepted|replayed|internal_error|unavailable\"}[10s]))",
+          "legendFormat": "rejected"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "C",
+          "expr": "sum(rate(crash_ws_request_duration_seconds_count{result=~\"internal_error|unavailable\"}[10s]))",
+          "legendFormat": "failed"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Failed share",
+      "description": "Share of requests the server failed (internal_error, unavailable). Should stay at 0.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 27
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum(rate(crash_ws_request_duration_seconds_count{result=~\"internal_error|unavailable\"}[10s])) / sum(rate(crash_ws_request_duration_seconds_count[10s]))",
+          "legendFormat": "failed"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Requests by result",
+      "description": "Requests per window by type and result, as counts: one request shows as 1.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 35
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum by (instance, type, result) (increase(crash_ws_request_duration_seconds_count[$__rate_interval]))",
+          "legendFormat": "{{type}} {{result}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
       "title": "Request duration",
       "description": "From receipt of a bet or cashout message to the response, by type. Does not include time waiting behind a busy event loop.",
       "datasource": {
@@ -524,8 +782,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
-        "y": 27
+        "x": 12,
+        "y": 35
       },
       "fieldConfig": {
         "defaults": {
@@ -572,57 +830,7 @@
       ]
     },
     {
-      "id": 13,
-      "type": "timeseries",
-      "title": "Requests by result",
-      "description": "Requests per second by type and result: accepted, replayed (answered with an existing result) or the error code sent.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 27
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "min": 0,
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10,
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "refId": "A",
-          "expr": "sum by (instance, type, result) (rate(crash_ws_request_duration_seconds_count[$__rate_interval]))",
-          "legendFormat": "{{type}} {{result}} {{instance}}"
-        }
-      ]
-    },
-    {
-      "id": 14,
+      "id": 17,
       "type": "timeseries",
       "title": "Connections",
       "description": "Open sockets tracked by the gateway, including those waiting for the token check.",
@@ -634,7 +842,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 35
+        "y": 43
       },
       "fieldConfig": {
         "defaults": {
@@ -672,7 +880,7 @@
       ]
     },
     {
-      "id": 15,
+      "id": 18,
       "type": "timeseries",
       "title": "Broadcast duration p99",
       "description": "Synchronous time to serialize one broadcast and hand it to every socket, by message type. Grows with the number of clients.",
@@ -684,7 +892,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 35
+        "y": 43
       },
       "fieldConfig": {
         "defaults": {
@@ -722,7 +930,7 @@
       ]
     },
     {
-      "id": 16,
+      "id": 19,
       "type": "timeseries",
       "title": "Buffered bytes",
       "description": "Data queued for slow clients at scrape time: total over all sockets and the largest single socket.",
@@ -734,7 +942,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 35
+        "y": 43
       },
       "fieldConfig": {
         "defaults": {
@@ -781,7 +989,7 @@
       ]
     },
     {
-      "id": 17,
+      "id": 20,
       "type": "row",
       "title": "Money and database",
       "collapsed": false,
@@ -789,12 +997,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 43
+        "y": 51
       },
       "panels": []
     },
     {
-      "id": 18,
+      "id": 21,
       "type": "timeseries",
       "title": "Money operations in flight",
       "description": "Bets, cashouts, auto-cashouts and settlements started and not finished. Rises when the database is the bottleneck.",
@@ -806,7 +1014,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 44
+        "y": 52
       },
       "fieldConfig": {
         "defaults": {
@@ -844,7 +1052,7 @@
       ]
     },
     {
-      "id": 19,
+      "id": 22,
       "type": "timeseries",
       "title": "Database pool",
       "description": "The app pool at scrape time. Waiting > 0 means requests queue for a connection (they give up after 1 s).",
@@ -856,7 +1064,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 44
+        "y": 52
       },
       "fieldConfig": {
         "defaults": {
@@ -912,7 +1120,7 @@
       ]
     },
     {
-      "id": 20,
+      "id": 23,
       "type": "timeseries",
       "title": "Unsettled bets",
       "description": "ACTIVE bets of earlier rounds the last settlement sweep could not settle (max over instances). Above 0 means bets are stuck until a sweep settles them.",
@@ -924,7 +1132,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 44
+        "y": 52
       },
       "fieldConfig": {
         "defaults": {
@@ -962,7 +1170,7 @@
       ]
     },
     {
-      "id": 21,
+      "id": 24,
       "type": "timeseries",
       "title": "Auto-cashouts",
       "description": "Bets due for auto-cashout per window, by trigger and result.",
@@ -974,7 +1182,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 52
+        "y": 60
       },
       "fieldConfig": {
         "defaults": {
@@ -1016,7 +1224,7 @@
       ]
     },
     {
-      "id": 22,
+      "id": 25,
       "type": "timeseries",
       "title": "Settled bets",
       "description": "Bets handled by settlement sweeps per window, by result.",
@@ -1028,7 +1236,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 52
+        "y": 60
       },
       "fieldConfig": {
         "defaults": {
@@ -1070,7 +1278,7 @@
       ]
     },
     {
-      "id": 23,
+      "id": 26,
       "type": "row",
       "title": "Reliability",
       "collapsed": false,
@@ -1078,12 +1286,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 60
+        "y": 68
       },
       "panels": []
     },
     {
-      "id": 24,
+      "id": 27,
       "type": "timeseries",
       "title": "Reconciliation mismatches",
       "description": "Broken money invariants found by the last reconciliation, by type (ADR-0007). Anything above 0 needs investigation.",
@@ -1095,7 +1303,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 61
+        "y": 69
       },
       "fieldConfig": {
         "defaults": {
@@ -1133,7 +1341,7 @@
       ]
     },
     {
-      "id": 25,
+      "id": 28,
       "type": "timeseries",
       "title": "Since last reconciliation",
       "description": "Seconds since the last completed reconciliation. Growing past the interval (60 s by default) means it stopped working.",
@@ -1145,7 +1353,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 61
+        "y": 69
       },
       "fieldConfig": {
         "defaults": {
@@ -1183,7 +1391,7 @@
       ]
     },
     {
-      "id": 26,
+      "id": 29,
       "type": "timeseries",
       "title": "Round write failures",
       "description": "Failed round writes per window, by operation. mark_crashed counts every failed attempt of the retried crash write.",
@@ -1195,7 +1403,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 69
+        "y": 77
       },
       "fieldConfig": {
         "defaults": {
@@ -1233,7 +1441,7 @@
       ]
     },
     {
-      "id": 27,
+      "id": 30,
       "type": "timeseries",
       "title": "Failed settlement sweeps",
       "description": "Sweeps that could not read the unsettled bets, per window.",
@@ -1245,7 +1453,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 69
+        "y": 77
       },
       "fieldConfig": {
         "defaults": {
@@ -1283,7 +1491,7 @@
       ]
     },
     {
-      "id": 28,
+      "id": 31,
       "type": "timeseries",
       "title": "Draining",
       "description": "1 while an instance shuts down and drains requests.",
@@ -1295,7 +1503,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 69
+        "y": 77
       },
       "fieldConfig": {
         "defaults": {
@@ -1333,7 +1541,7 @@
       ]
     },
     {
-      "id": 29,
+      "id": 32,
       "type": "row",
       "title": "Event loop (game server)",
       "collapsed": false,
@@ -1341,12 +1549,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 77
+        "y": 85
       },
       "panels": []
     },
     {
-      "id": 30,
+      "id": 33,
       "type": "timeseries",
       "title": "Event loop lag",
       "description": "From monitorEventLoopDelay, reset on every scrape (each point covers 5 s). An idle process reads about 10 ms (the measuring interval): the real lag is the value minus about 10 ms.",
@@ -1358,7 +1566,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 78
+        "y": 86
       },
       "fieldConfig": {
         "defaults": {
@@ -1423,7 +1631,7 @@
       ]
     },
     {
-      "id": 31,
+      "id": 34,
       "type": "row",
       "title": "Process (game server)",
       "collapsed": false,
@@ -1431,12 +1639,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 86
+        "y": 94
       },
       "panels": []
     },
     {
-      "id": 32,
+      "id": 35,
       "type": "timeseries",
       "title": "CPU",
       "description": "Share of one core used by the process.",
@@ -1448,7 +1656,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 87
+        "y": 95
       },
       "fieldConfig": {
         "defaults": {
@@ -1486,7 +1694,7 @@
       ]
     },
     {
-      "id": 33,
+      "id": 36,
       "type": "timeseries",
       "title": "Memory",
       "description": "Resident set size and V8 heap.",
@@ -1498,7 +1706,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 87
+        "y": 95
       },
       "fieldConfig": {
         "defaults": {
@@ -1554,7 +1762,7 @@
       ]
     },
     {
-      "id": 34,
+      "id": 37,
       "type": "timeseries",
       "title": "GC time",
       "description": "Share of time spent in garbage collection, by kind.",
@@ -1566,7 +1774,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 87
+        "y": 95
       },
       "fieldConfig": {
         "defaults": {

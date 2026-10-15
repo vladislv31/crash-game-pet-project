@@ -1,6 +1,7 @@
-import type { LoadRange, LoadScenario } from '@crash/contracts';
+import type { LoadRange, LoadScenario, LoadStep } from '@crash/contracts';
 
 export type Range = LoadRange;
+export type Step = LoadStep;
 
 /** What a load run does (ADR-0008). Multipliers are in hundredths, amounts are whole units. */
 export type Scenario = LoadScenario;
@@ -9,13 +10,13 @@ export type ScenarioResult =
   { ok: true; value: Scenario } | { ok: false; errors: Record<string, string> };
 
 const NAME_MAX_LENGTH = 40;
+const MAX_STEPS = 20;
 
 export const PRESETS: Record<string, Scenario> = {
   steady: {
     name: 'steady',
-    bots: 100,
+    steps: [{ bots: 100, durationSeconds: null }],
     rampPerSecond: 20,
-    durationSeconds: null,
     betProbability: 0.8,
     betAmount: { min: 100, max: 500 },
     autoCashoutShare: 0.5,
@@ -24,9 +25,8 @@ export const PRESETS: Record<string, Scenario> = {
   },
   ramp: {
     name: 'ramp',
-    bots: 1_000,
+    steps: [{ bots: 1_000, durationSeconds: null }],
     rampPerSecond: 10,
-    durationSeconds: null,
     betProbability: 0.8,
     betAmount: { min: 100, max: 500 },
     autoCashoutShare: 0.5,
@@ -35,10 +35,24 @@ export const PRESETS: Record<string, Scenario> = {
   },
   spike: {
     name: 'spike',
-    bots: 2_000,
+    steps: [{ bots: 2_000, durationSeconds: null }],
     rampPerSecond: 500,
-    durationSeconds: null,
     betProbability: 0.8,
+    betAmount: { min: 100, max: 500 },
+    autoCashoutShare: 0.5,
+    target: { min: 120, max: 500 },
+    duplicateCashouts: 1,
+  },
+  steps: {
+    name: 'steps',
+    steps: [
+      { bots: 500, durationSeconds: 300 },
+      { bots: 1_000, durationSeconds: 300 },
+      { bots: 2_000, durationSeconds: 300 },
+      { bots: 4_000, durationSeconds: 300 },
+    ],
+    rampPerSecond: 100,
+    betProbability: 1,
     betAmount: { min: 100, max: 500 },
     autoCashoutShare: 0.5,
     target: { min: 120, max: 500 },
@@ -46,9 +60,8 @@ export const PRESETS: Record<string, Scenario> = {
   },
   'duplicate-cashouts': {
     name: 'duplicate-cashouts',
-    bots: 50,
+    steps: [{ bots: 50, durationSeconds: null }],
     rampPerSecond: 50,
-    durationSeconds: null,
     betProbability: 1,
     betAmount: { min: 100, max: 100 },
     autoCashoutShare: 0,
@@ -74,12 +87,8 @@ export function parseScenario(input: unknown): ScenarioResult {
 
   const scenario = {
     name: check('name', name(input.name)),
-    bots: check('bots', integer(input.bots, 1, 20_000)),
+    steps: check('steps', steps(input.steps)),
     rampPerSecond: check('rampPerSecond', integer(input.rampPerSecond, 1, 1_000)),
-    durationSeconds: check(
-      'durationSeconds',
-      input.durationSeconds === null ? ok(null) : integer(input.durationSeconds, 1, 86_400),
-    ),
     betProbability: check('betProbability', fraction(input.betProbability)),
     betAmount: check('betAmount', range(input.betAmount, 100, 1_000)),
     autoCashoutShare: check('autoCashoutShare', fraction(input.autoCashoutShare)),
@@ -131,6 +140,50 @@ function integer(value: unknown, min: number, max: number, path = ''): Checked<n
     return fail('invalid', path);
   }
   return bounded(value, min, max, path);
+}
+
+function steps(value: unknown): Checked<Step[]> {
+  if (!Array.isArray(value)) {
+    return fail('invalid');
+  }
+  if (value.length === 0) {
+    return fail('too_low');
+  }
+  if (value.length > MAX_STEPS) {
+    return fail('too_high');
+  }
+
+  const errors: Record<string, string> = {};
+  const parsed = value.map((item: unknown, index): Step | undefined => {
+    const result = step(item, index === value.length - 1);
+    if (result.ok) {
+      return result.value;
+    }
+    Object.assign(errors, prefixed(String(index), result.errors));
+    return undefined;
+  });
+  return Object.keys(errors).length > 0 ? { ok: false, errors } : ok(parsed as Step[]);
+}
+
+function step(value: unknown, last: boolean): Checked<Step> {
+  if (!isRecord(value)) {
+    return fail('invalid');
+  }
+
+  const bots = integer(value.bots, 1, 20_000, 'bots');
+  const duration =
+    value.durationSeconds === null
+      ? last
+        ? ok(null)
+        : fail('required', 'durationSeconds')
+      : integer(value.durationSeconds, 1, 86_400, 'durationSeconds');
+  if (!bots.ok || !duration.ok) {
+    return {
+      ok: false,
+      errors: { ...(bots.ok ? {} : bots.errors), ...(duration.ok ? {} : duration.errors) },
+    };
+  }
+  return ok({ bots: bots.value, durationSeconds: duration.value });
 }
 
 function fraction(value: unknown): Checked<number> {
