@@ -153,7 +153,7 @@
     {
       "id": 4,
       "type": "row",
-      "title": "Requests",
+      "title": "Players (load generator)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -166,6 +166,355 @@
     {
       "id": 5,
       "type": "timeseries",
+      "title": "Player latency",
+      "description": "What players wait for a bet or cash-out answer, from the moment the bot planned the request (ADR-0008), p50 and p99 by type.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le, type) (rate(loadgen_request_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50 {{type}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "B",
+          "expr": "histogram_quantile(0.99, sum by (le, type) (rate(loadgen_request_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99 {{type}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Player requests by result",
+      "description": "Answers per second as bots see them, by type and result.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum by (type, result) (rate(loadgen_request_duration_seconds_count[$__rate_interval]))",
+          "legendFormat": "{{type}} {{result}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Bots",
+      "description": "Bots the run aims for and bots connected now.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 18
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "loadgen_bots{state=\"target\"}",
+          "legendFormat": "target"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "B",
+          "expr": "loadgen_bots{state=\"connected\"}",
+          "legendFormat": "connected"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Tick jitter (players)",
+      "description": "How much later than 100 ms after the previous tick bots received a tick, p99.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 18
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(loadgen_tick_jitter_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Connection problems",
+      "description": "Failed logins and socket connections, and sockets closed by the server, per window.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 18
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum by (stage) (increase(loadgen_connection_failures_total[$__rate_interval]))",
+          "legendFormat": "failed {{stage}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "B",
+          "expr": "sum by (code) (increase(loadgen_disconnects_total[$__rate_interval]))",
+          "legendFormat": "closed {{code}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Generator health",
+      "description": "The generator's own event loop lag p99 and CPU. When they climb, the generator is the bottleneck and player latency is not trustworthy.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 18
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "nodejs_eventloop_lag_p99_seconds{job=\"load-generator\"}",
+          "legendFormat": "event loop p99"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "B",
+          "expr": "rate(process_cpu_seconds_total{job=\"load-generator\"}[$__rate_interval])",
+          "legendFormat": "cpu (share of a core)"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "row",
+      "title": "Requests",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      },
+      "panels": []
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
       "title": "Request duration",
       "description": "From receipt of a bet or cashout message to the response, by type. Does not include time waiting behind a busy event loop.",
       "datasource": {
@@ -176,7 +525,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 10
+        "y": 27
       },
       "fieldConfig": {
         "defaults": {
@@ -223,7 +572,7 @@
       ]
     },
     {
-      "id": 6,
+      "id": 13,
       "type": "timeseries",
       "title": "Requests by result",
       "description": "Requests per second by type and result: accepted, replayed (answered with an existing result) or the error code sent.",
@@ -235,7 +584,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 10
+        "y": 27
       },
       "fieldConfig": {
         "defaults": {
@@ -273,7 +622,7 @@
       ]
     },
     {
-      "id": 7,
+      "id": 14,
       "type": "timeseries",
       "title": "Connections",
       "description": "Open sockets tracked by the gateway, including those waiting for the token check.",
@@ -285,7 +634,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 18
+        "y": 35
       },
       "fieldConfig": {
         "defaults": {
@@ -323,7 +672,7 @@
       ]
     },
     {
-      "id": 8,
+      "id": 15,
       "type": "timeseries",
       "title": "Broadcast duration p99",
       "description": "Synchronous time to serialize one broadcast and hand it to every socket, by message type. Grows with the number of clients.",
@@ -335,7 +684,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 18
+        "y": 35
       },
       "fieldConfig": {
         "defaults": {
@@ -373,7 +722,7 @@
       ]
     },
     {
-      "id": 9,
+      "id": 16,
       "type": "timeseries",
       "title": "Buffered bytes",
       "description": "Data queued for slow clients at scrape time: total over all sockets and the largest single socket.",
@@ -385,7 +734,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 18
+        "y": 35
       },
       "fieldConfig": {
         "defaults": {
@@ -432,7 +781,7 @@
       ]
     },
     {
-      "id": 10,
+      "id": 17,
       "type": "row",
       "title": "Money and database",
       "collapsed": false,
@@ -440,12 +789,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 26
+        "y": 43
       },
       "panels": []
     },
     {
-      "id": 11,
+      "id": 18,
       "type": "timeseries",
       "title": "Money operations in flight",
       "description": "Bets, cashouts, auto-cashouts and settlements started and not finished. Rises when the database is the bottleneck.",
@@ -457,7 +806,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 27
+        "y": 44
       },
       "fieldConfig": {
         "defaults": {
@@ -495,7 +844,7 @@
       ]
     },
     {
-      "id": 12,
+      "id": 19,
       "type": "timeseries",
       "title": "Database pool",
       "description": "The app pool at scrape time. Waiting > 0 means requests queue for a connection (they give up after 1 s).",
@@ -507,7 +856,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 27
+        "y": 44
       },
       "fieldConfig": {
         "defaults": {
@@ -563,7 +912,7 @@
       ]
     },
     {
-      "id": 13,
+      "id": 20,
       "type": "timeseries",
       "title": "Unsettled bets",
       "description": "ACTIVE bets of earlier rounds the last settlement sweep could not settle (max over instances). Above 0 means bets are stuck until a sweep settles them.",
@@ -575,7 +924,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 27
+        "y": 44
       },
       "fieldConfig": {
         "defaults": {
@@ -613,7 +962,7 @@
       ]
     },
     {
-      "id": 14,
+      "id": 21,
       "type": "timeseries",
       "title": "Auto-cashouts",
       "description": "Bets due for auto-cashout per window, by trigger and result.",
@@ -625,7 +974,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 35
+        "y": 52
       },
       "fieldConfig": {
         "defaults": {
@@ -667,7 +1016,7 @@
       ]
     },
     {
-      "id": 15,
+      "id": 22,
       "type": "timeseries",
       "title": "Settled bets",
       "description": "Bets handled by settlement sweeps per window, by result.",
@@ -679,7 +1028,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 35
+        "y": 52
       },
       "fieldConfig": {
         "defaults": {
@@ -721,7 +1070,7 @@
       ]
     },
     {
-      "id": 16,
+      "id": 23,
       "type": "row",
       "title": "Reliability",
       "collapsed": false,
@@ -729,12 +1078,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 43
+        "y": 60
       },
       "panels": []
     },
     {
-      "id": 17,
+      "id": 24,
       "type": "timeseries",
       "title": "Reconciliation mismatches",
       "description": "Broken money invariants found by the last reconciliation, by type (ADR-0007). Anything above 0 needs investigation.",
@@ -746,7 +1095,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 44
+        "y": 61
       },
       "fieldConfig": {
         "defaults": {
@@ -784,7 +1133,7 @@
       ]
     },
     {
-      "id": 18,
+      "id": 25,
       "type": "timeseries",
       "title": "Since last reconciliation",
       "description": "Seconds since the last completed reconciliation. Growing past the interval (60 s by default) means it stopped working.",
@@ -796,7 +1145,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 44
+        "y": 61
       },
       "fieldConfig": {
         "defaults": {
@@ -834,7 +1183,7 @@
       ]
     },
     {
-      "id": 19,
+      "id": 26,
       "type": "timeseries",
       "title": "Round write failures",
       "description": "Failed round writes per window, by operation. mark_crashed counts every failed attempt of the retried crash write.",
@@ -846,7 +1195,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 52
+        "y": 69
       },
       "fieldConfig": {
         "defaults": {
@@ -884,7 +1233,7 @@
       ]
     },
     {
-      "id": 20,
+      "id": 27,
       "type": "timeseries",
       "title": "Failed settlement sweeps",
       "description": "Sweeps that could not read the unsettled bets, per window.",
@@ -896,7 +1245,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 52
+        "y": 69
       },
       "fieldConfig": {
         "defaults": {
@@ -934,7 +1283,7 @@
       ]
     },
     {
-      "id": 21,
+      "id": 28,
       "type": "timeseries",
       "title": "Draining",
       "description": "1 while an instance shuts down and drains requests.",
@@ -946,7 +1295,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 52
+        "y": 69
       },
       "fieldConfig": {
         "defaults": {
@@ -984,20 +1333,20 @@
       ]
     },
     {
-      "id": 22,
+      "id": 29,
       "type": "row",
-      "title": "Event loop",
+      "title": "Event loop (game server)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 60
+        "y": 77
       },
       "panels": []
     },
     {
-      "id": 23,
+      "id": 30,
       "type": "timeseries",
       "title": "Event loop lag",
       "description": "From monitorEventLoopDelay, reset on every scrape (each point covers 5 s). An idle process reads about 10 ms (the measuring interval): the real lag is the value minus about 10 ms.",
@@ -1009,7 +1358,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 61
+        "y": 78
       },
       "fieldConfig": {
         "defaults": {
@@ -1041,7 +1390,7 @@
             "uid": "prometheus"
           },
           "refId": "A",
-          "expr": "nodejs_eventloop_lag_p50_seconds",
+          "expr": "nodejs_eventloop_lag_p50_seconds{job=\"game-server\"}",
           "legendFormat": "p50 {{instance}}"
         },
         {
@@ -1050,7 +1399,7 @@
             "uid": "prometheus"
           },
           "refId": "B",
-          "expr": "nodejs_eventloop_lag_p90_seconds",
+          "expr": "nodejs_eventloop_lag_p90_seconds{job=\"game-server\"}",
           "legendFormat": "p90 {{instance}}"
         },
         {
@@ -1059,7 +1408,7 @@
             "uid": "prometheus"
           },
           "refId": "C",
-          "expr": "nodejs_eventloop_lag_p99_seconds",
+          "expr": "nodejs_eventloop_lag_p99_seconds{job=\"game-server\"}",
           "legendFormat": "p99 {{instance}}"
         },
         {
@@ -1068,26 +1417,26 @@
             "uid": "prometheus"
           },
           "refId": "D",
-          "expr": "nodejs_eventloop_lag_max_seconds",
+          "expr": "nodejs_eventloop_lag_max_seconds{job=\"game-server\"}",
           "legendFormat": "max {{instance}}"
         }
       ]
     },
     {
-      "id": 24,
+      "id": 31,
       "type": "row",
-      "title": "Process",
+      "title": "Process (game server)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 69
+        "y": 86
       },
       "panels": []
     },
     {
-      "id": 25,
+      "id": 32,
       "type": "timeseries",
       "title": "CPU",
       "description": "Share of one core used by the process.",
@@ -1099,7 +1448,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 70
+        "y": 87
       },
       "fieldConfig": {
         "defaults": {
@@ -1131,13 +1480,13 @@
             "uid": "prometheus"
           },
           "refId": "A",
-          "expr": "rate(process_cpu_seconds_total[$__rate_interval])",
+          "expr": "rate(process_cpu_seconds_total{job=\"game-server\"}[$__rate_interval])",
           "legendFormat": "{{instance}}"
         }
       ]
     },
     {
-      "id": 26,
+      "id": 33,
       "type": "timeseries",
       "title": "Memory",
       "description": "Resident set size and V8 heap.",
@@ -1149,7 +1498,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 70
+        "y": 87
       },
       "fieldConfig": {
         "defaults": {
@@ -1181,7 +1530,7 @@
             "uid": "prometheus"
           },
           "refId": "A",
-          "expr": "process_resident_memory_bytes",
+          "expr": "process_resident_memory_bytes{job=\"game-server\"}",
           "legendFormat": "rss {{instance}}"
         },
         {
@@ -1190,7 +1539,7 @@
             "uid": "prometheus"
           },
           "refId": "B",
-          "expr": "nodejs_heap_size_used_bytes",
+          "expr": "nodejs_heap_size_used_bytes{job=\"game-server\"}",
           "legendFormat": "heap used {{instance}}"
         },
         {
@@ -1199,13 +1548,13 @@
             "uid": "prometheus"
           },
           "refId": "C",
-          "expr": "nodejs_heap_size_total_bytes",
+          "expr": "nodejs_heap_size_total_bytes{job=\"game-server\"}",
           "legendFormat": "heap total {{instance}}"
         }
       ]
     },
     {
-      "id": 27,
+      "id": 34,
       "type": "timeseries",
       "title": "GC time",
       "description": "Share of time spent in garbage collection, by kind.",
@@ -1217,7 +1566,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 70
+        "y": 87
       },
       "fieldConfig": {
         "defaults": {
@@ -1249,7 +1598,7 @@
             "uid": "prometheus"
           },
           "refId": "A",
-          "expr": "sum by (instance, kind) (rate(nodejs_gc_duration_seconds_sum[$__rate_interval]))",
+          "expr": "sum by (instance, kind) (rate(nodejs_gc_duration_seconds_sum{job=\"game-server\"}[$__rate_interval]))",
           "legendFormat": "{{kind}} {{instance}}"
         }
       ]

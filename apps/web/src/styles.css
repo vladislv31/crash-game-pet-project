@@ -31,7 +31,8 @@ body {
 }
 
 .game,
-.login {
+.login,
+.lab {
   max-width: 640px;
   margin: 24px auto;
   padding: 0 16px;
@@ -173,4 +174,39 @@ button:disabled {
   .bet-panel form {
     grid-template-columns: 1fr;
   }
+}
+
+.lab {
+  max-width: 960px;
+}
+
+.lab-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.lab-actions {
+  display: flex;
+  gap: 8px;
+  align-items: end;
+}
+
+.lab-report dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+}
+
+.lab-report dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.status-online {
+  color: var(--win);
+}
+
+.status-offline {
+  color: var(--loss);
 }

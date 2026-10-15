@@ -135,6 +135,22 @@ docker compose --profile observability up -d
 | Draining                                              | 1 while the server shuts down and finishes requests in progress.                                                                                                                                                                                                            |
 | Reconciliation mismatches / Since last reconciliation | Broken money invariants found by the last run, by type, and how long ago the last run completed. Above 0, or a growing time since the last run, needs investigation.                                                                                                        |
 
+## Load lab
+
+Thousands of bots playing at once, started from a page ([ADR-0008](docs/adr/0008-load-generator.md)). With the game server and the web client running:
+
+```bash
+npm start -w load-generator
+```
+
+Open http://localhost:5173/lab, pick a preset (`steady`, `ramp`, `spike`, `duplicate-cashouts`) or edit the scenario, and press Start. The page shows bots connected, requests and errors per second and player latency over the last 10 seconds; the charts are in the **Players** section of the Grafana dashboard, next to the server metrics.
+
+- Every bot logs in as a new player (`bot_<run>_<n>`), so runs never drain each other's balances.
+- Player latency counts from the moment a bot planned a request, so a busy server or a busy generator shows up instead of being hidden.
+- **Generator health** on the dashboard shows the generator's own event loop lag and CPU: when they climb, the generator is the bottleneck and the latency numbers of that run are not trustworthy.
+- One generator holds up to about 16 000 connections on macOS (ephemeral ports per destination).
+- After a run that moved money, `npm run reconcile -w game-server` checks that it adds up.
+
 ## Load simulations
 
 Manual load hardcoded into the server to see how the metrics react, before the load generator exists (Phase 4). Each simulation is switched on by an environment variable, so it never runs by accident, and recorded here as:
@@ -251,10 +267,10 @@ Measured separately with `node --trace-gc`: creating the million objects takes 3
 
 Phase 6 experiments, each with a full write-up in [docs/experiments](docs/experiments) (setup, results, conclusions) and a summary here.
 
-| #   | Experiment                                                              | Status                             | Result |
-| --- | ----------------------------------------------------------------------- | ---------------------------------- | ------ |
-| 1   | Max connections before p99 grows                                        | needs the load generator (Phase 4) |        |
-| 2   | Several instances behind a load balancer, Redis pub/sub                 | needs horizontal scaling (Phase 5) |        |
-| 3   | Kill an instance mid-round: no lost bets or payouts                     | runnable on one instance           |        |
-| 4   | Concurrent duplicate cashouts: paid exactly once                        | runnable                           |        |
-| 5   | Wallet concurrency: isolation levels and row locks in PostgreSQL (MVCC) | runnable                           |        |
+| #   | Experiment                                                              | Status                                | Result |
+| --- | ----------------------------------------------------------------------- | ------------------------------------- | ------ |
+| 1   | Max connections before p99 grows                                        | runnable with the load lab            |        |
+| 2   | Several instances behind a load balancer, Redis pub/sub                 | needs horizontal scaling (Phase 5)    |        |
+| 3   | Kill an instance mid-round: no lost bets or payouts                     | runnable on one instance              |        |
+| 4   | Concurrent duplicate cashouts: paid exactly once                        | runnable: `duplicate-cashouts` preset |        |
+| 5   | Wallet concurrency: isolation levels and row locks in PostgreSQL (MVCC) | runnable                              |        |

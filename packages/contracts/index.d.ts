@@ -153,3 +153,46 @@ export type ServerMessage =
   | CashoutAcceptedMessage
   | BalanceMessage
   | ErrorMessage;
+
+// Load generator control API (ADR-0008), used by the test dashboard.
+
+export interface LoadRange {
+  min: number;
+  max: number;
+}
+
+/** Multipliers are in hundredths; probabilities and shares are fractions from 0 to 1. */
+export interface LoadScenario {
+  name: string;
+  bots: number;
+  rampPerSecond: number;
+  durationSeconds: number | null;
+  betProbability: number;
+  betAmount: LoadRange;
+  autoCashoutShare: number;
+  target: LoadRange;
+  duplicateCashouts: number;
+}
+
+export interface LoadRunStatus {
+  runId: string;
+  scenario: LoadScenario;
+  state: 'running' | 'stopped';
+  startedAt: number;
+  botsStarted: number;
+  botsConnected: number;
+}
+
+export interface LoadLiveSummary {
+  requestsPerSecond: number;
+  errorsPerSecond: number;
+  latencyMs: { p50: number | null; p99: number | null };
+  /** Requests in the window by `"<type> <result>"`. */
+  results: Record<string, number>;
+}
+
+/** `GET /run` and every server-sent event of `GET /events`. */
+export interface LoadRunReport {
+  run: LoadRunStatus | null;
+  live: LoadLiveSummary;
+}

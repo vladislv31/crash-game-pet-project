@@ -10,3 +10,9 @@ scrape_configs:
     # Phase 5 lists every instance here (never the load balancer), so their series stay apart.
     static_configs:
       - targets: ['host.docker.internal:3000']
+
+  # The load generator (ADR-0008): player-side latency and its own event loop lag.
+  - job_name: load-generator
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['host.docker.internal:3100']

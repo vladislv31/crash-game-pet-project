@@ -1,6 +1,6 @@
 # Development state
 
-**Current phase:** 3 — Observability (logs and metrics implemented, owner check pending)
+**Current phase:** 4 — Load generator and test dashboard (implemented, first live run pending)
 **Last updated:** 2026-10-13
 
 ## Done
@@ -58,7 +58,13 @@
     - unit tests 392/392 (game-server), integration tests 52/52
   - `npm run verify`: one command for format, lint, typecheck (every workspace), unit and integration tests
     - its first run found a real mismatch in the dev database: user `vlados` (created before the ledger existed) has no `INITIAL` entry, so the balance is 5000 above the ledger
-  - Next: Phase 3 is complete once the owner has checked the dashboard under load; then Phase 4 (load generator)
+
+- Phase 4 — load generator and test dashboard (ADR-0008), implemented by Claude on request (TDD), awaiting owner review and a first live run:
+  - `apps/load-generator`: plain Node, bots on `ws`; scenario validation and presets; pure bot logic (planned bets and manual cash-outs on the bot's clock, duplicate cash-outs, latency from the planned moment, tick jitter); connection with reconnects; one run at a time with ramp-up and duration; control API with server-sent events; `loadgen_*` metrics and a `load_run` log event
+  - generator API types in `@crash/contracts`
+  - `apps/web`: test dashboard at `/lab` (presets, scenario form with 422 errors per field, start/stop, live numbers); Vite proxies `/generator`
+  - Prometheus scrapes the generator; dashboard section Players, server panels filtered to the game server
+  - not run end to end yet: needs the game server, the generator and the web client running together
 
 ## Backlog (before experiments)
 

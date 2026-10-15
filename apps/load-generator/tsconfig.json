@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "ES2023",
+    "rootDir": "./",
+    "outDir": "./dist",
+    "types": ["node", "jest"]
+  },
+  "include": ["src", "jest.config.ts"]
+}
