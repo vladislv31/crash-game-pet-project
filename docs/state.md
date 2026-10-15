@@ -68,6 +68,8 @@
   - dashboard: request rate and outcomes (success, rejected, failed) and failed share
   - first live run by the owner: the `spike` preset failed bets with `internal_error` because the 10-connection database pool timed out after 1 s; money stayed safe (failed bets roll back). Next: a configurable pool size to measure where the pool stops being the limit
 
+- Performance testing ([plan](experiments/performance-test-plan.md)), run by the owner step by step: SLOs, environment and run protocol recorded (step 0, 2026-10-15). Next: step 1, smoke and generator calibration
+
 ## Backlog (before experiments)
 
 - WebSocket hardening: `maxPayload`, per-socket message rate limit, ignore messages before auth, ping/pong to drop dead connections

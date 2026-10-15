@@ -269,7 +269,7 @@ Measured separately with `node --trace-gc`: creating the million objects takes 3
 
 ## Experiments
 
-Phase 6 experiments, each with a full write-up in [docs/experiments](docs/experiments) (setup, results, conclusions) and a summary here.
+Phase 6 experiments, each with a full write-up in [docs/experiments](docs/experiments) (setup, results, conclusions) and a summary here. The order of the performance runs, their pass criteria (SLOs) and the test environment are in the [performance test plan](docs/experiments/performance-test-plan.md).
 
 | #   | Experiment                                                              | Status                                | Result |
 | --- | ----------------------------------------------------------------------- | ------------------------------------- | ------ |
