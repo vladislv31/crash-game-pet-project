@@ -74,9 +74,10 @@
 
 - WebSocket hardening: `maxPayload`, per-socket message rate limit, ignore messages before auth, ping/pong to drop dead connections
 - Rate limit `POST /auth/login` (every new username creates a user)
-- Partial index on `bets` for `status = 'ACTIVE'` (settlement sweep scans the table)
+- Partial index on `bets` for `status = 'ACTIVE'`: the settlement sweep (`findUnsettledBets`) reads all of `ix_bets_round_status` every round, about 30 ms at 1M bets and growing with history
 - End-to-end WebSocket test through the real app (login → bet → cashout)
 - CI: lint, unit tests, integration tests with PostgreSQL
+- Migrations without `lock_timeout`: they run at startup on a connection with no timeouts, so an `ALTER TABLE` that waits for `ACCESS EXCLUSIVE` behind a long transaction (a reconciliation snapshot, `npm run reconcile`, another instance during a rolling deploy in Phase 5) queues every later query on that table behind it and stalls bets. Set `lock_timeout` for migrations and retry; use `CREATE INDEX CONCURRENTLY` for indexes on large tables (it cannot run inside a transaction, so that migration needs `transaction = false`)
 
 ## Open questions
 

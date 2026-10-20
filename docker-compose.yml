@@ -1,6 +1,8 @@
 services:
   postgres:
     image: postgres:17-alpine
+    # pg_stat_statements: per-query totals for finding slow queries under load
+    command: ['postgres', '-c', 'shared_preload_libraries=pg_stat_statements']
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-crash}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crash}
