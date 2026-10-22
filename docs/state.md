@@ -1,7 +1,7 @@
 # Development state
 
 **Current phase:** 4 — Load generator and test dashboard (implemented, first runs done)
-**Last updated:** 2026-10-13
+**Last updated:** 2026-10-22
 
 ## Done
 
@@ -68,7 +68,7 @@
   - dashboard: request rate and outcomes (success, rejected, failed) and failed share
   - first live run by the owner: the `spike` preset failed bets with `internal_error` because the 10-connection database pool timed out after 1 s; money stayed safe (failed bets roll back). Next: a configurable pool size to measure where the pool stops being the limit
 
-- Performance testing ([plan](experiments/performance-test-plan.md)), run by the owner step by step: SLOs, environment and run protocol recorded (step 0, 2026-10-15). Next: step 1, smoke and generator calibration
+- Performance testing ([plan](experiments/performance-test-plan.md)), run by the owner step by step: SLOs, environment and run protocol recorded (step 0, 2026-10-15); generator runs built without ts-node; step 1 done 2026-10-22: the chain works, one generator is honest up to at least 2000 bots, the server breaks its tick thresholds first at 2000. Next: step 2, baseline
 
 ## Backlog (before experiments)
 

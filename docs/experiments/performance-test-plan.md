@@ -94,3 +94,39 @@ Every fix found in steps 4–7 goes through its own cycle: hypothesis, change (T
 ### Step 0. Preparation
 
 Done 2026-10-15: SLOs accepted, environment recorded, pre-run checklist written.
+
+### Step 1. Smoke and generator calibration
+
+Done 2026-10-22 at commit `dd4f6aa`: game server and generator both built and started without ts-node or pretty printing, database recreated empty.
+
+**Smoke: 5 bots, 80% bet chance, 3 minutes.**
+
+| What                | Observed                                     |
+| ------------------- | -------------------------------------------- |
+| Rounds              | 7                                            |
+| Bets                | 34                                           |
+| Bet and cashout p99 | < 50 ms, the same on the server and the bots |
+| Tick jitter p99     | a few ms                                     |
+| Outcomes            | all success                                  |
+| Top query by time   | bets insert, then rounds insert, then ledger |
+| Reconciliation      | OK: 6 users, 34 bets, 0 mismatches           |
+
+- A round takes ~26–29 s: 15 s of betting, 5 s of pause and a flight of ln(crash point) / k, a median of ~6.4 s (crash at ~1.98x) and a mean of ~9.3 s. Three minutes hold 6–7 rounds.
+- The bets insert costs more than the ledger insert (0.56 ms against 0.33 ms on average): `bets` has four indexes, two of them unique, and a primary key passed in from outside; `ledger_entries` has two and a sequential key. At this load the difference is near noise; step 4 checks it.
+- Query counts add up to the money: 6 users + 34 bets + 8 manual cash-outs = 48 ledger inserts.
+- `pg_stat_statements` keeps totals since the database started (here ~30 minutes of the server: 61 rounds, 31 reconciliations); reset it right before each run so the totals belong to that run.
+- Conclusion: the chain works end to end. This is the floor: p99 under 50 ms, jitter a few ms, the database idle.
+
+**Calibration: connections only (`betProbability = 0`), 500 → 1000 → 2000 bots, stopped after 2000.** Generator CPU is read on rounds whose flight lasts at least the 20 s `rate()` window, so the betting phase does not dilute it.
+
+| Bots | Generator CPU | Generator lag p99 (graph) | Server                                                          |
+| ---- | ------------- | ------------------------- | --------------------------------------------------------------- |
+| 500  | 0.158         | floor (~0.01)             | within SLO                                                      |
+| 1000 | 0.27–0.29     | up to 0.019               | within SLO                                                      |
+| 2000 | 0.33          | up to 0.019               | event loop lag above 50 ms, tick delay at times ~50 ms, CPU 0.3 |
+
+- From 500 and 1000, generator CPU fits a constant part plus a cost per message: ~0.036 + ~24 µs per message, which would put 2000 at 0.52 and the 0.7 limit near 2700 bots. At 2000 it measured 0.33.
+- The server sent 10 ticks per second and every bot received every tick (bot ticks / server ticks ≈ 1), so at 2000 the generator did handle 20 000 messages per second: the cost per message falls with load (~5 µs for the added messages). Not established why: more messages per event loop pass, or macOS moving the process from efficiency to performance cores, which would make "share of a core" a different unit at low and high load. A per-message cost holds only at the load it was measured at.
+- The generator's lag follows the size of a tick burst, not average CPU, so the lag threshold may bind before CPU 0.7.
+- Conclusion: one generator is honest up to at least 2000 bots on this machine. The server broke its thresholds first, at 2000: a likely cause is the broadcast loop, which sends to every socket in one synchronous pass (not checked yet: the hypothesis for step 3). The generator's own ceiling stays unknown.
+- Not recorded: tick delay p99 over a 5-minute window, Broadcast duration p99, reconciliation after the calibration run, repeats.
