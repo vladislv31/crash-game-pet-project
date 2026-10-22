@@ -68,7 +68,7 @@ Reading the dashboards: RED (rate, errors, duration) for what players see, USE (
 
 - [ ] `docker compose --profile observability up -d`, all containers healthy
 - [ ] Game server built and started without watch mode or pretty printing: `npm run build -w game-server`, then `npm run start:prod -w game-server` with logs redirected to a file
-- [ ] Load generator started (`npm start -w load-generator`)
+- [ ] Load generator built and started the same way: `npm run build -w load-generator`, then `npm run start:prod -w load-generator` with logs redirected to a file
 - [ ] Prometheus `/targets`: game server and generator up
 - [ ] No other heavy processes running (builds, tests, video calls)
 - [ ] Dashboard time range covers the run; annotations visible

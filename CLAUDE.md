@@ -27,7 +27,7 @@ A multiplayer crash game (iGaming) over WebSockets. It comes with a test dashboa
 - `npm run verify`: the definition-of-done gate (format, lint, typecheck, unit tests, integration tests); needs `docker compose up -d`. Run it before calling a change done
 - `docker compose up -d` starts Postgres and Redis; `docker compose --profile observability up -d` adds Prometheus (port 9090) and Grafana (port 3001, dashboards from `ops/grafana`)
 - `npm run start:dev -w game-server` (port 3000, applies migrations on start), `npm run dev -w web` (port 5173, proxies `/auth` and `/ws` to 3000, `/generator` to 3100)
-- `npm start -w load-generator` (port 3100, `GAME_SERVER_URL` defaults to http://localhost:3000, `GRAFANA_URL` to http://localhost:3001 for run annotations): bots for load runs (ADR-0008), controlled from the test dashboard at http://localhost:5173/lab
+- `npm start -w load-generator` (port 3100, `GAME_SERVER_URL` defaults to http://localhost:3000, `GRAFANA_URL` to http://localhost:3001 for run annotations): bots for load runs (ADR-0008), controlled from the test dashboard at http://localhost:5173/lab; for measured runs `npm run build -w load-generator`, then `npm run start:prod -w load-generator`
 - `npm run test:e2e -w game-server`: integration tests against PostgreSQL (database `crash_test`, created automatically)
 - `npm run reconcile -w game-server`: checks the money invariants once (ADR-0007), exit code 1 on any mismatch; the server also runs it every `RECONCILIATION_INTERVAL_MS` (default 60 s, 0 turns it off)
 - Migrations: `npm run migration:generate -w game-server -- src/database/migrations/<name>`, then run the same command again: it must report no changes

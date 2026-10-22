@@ -3,6 +3,8 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "start:prod": "node dist/main",
     "start": "ts-node src/main.ts | pino-pretty --singleLine --timestampKey timestamp --messageKey event --ignore service,serviceVersion,commitHash,region,instanceId",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "jest"

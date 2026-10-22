@@ -78,6 +78,8 @@ Thousands of bots playing at once, started from a page ([ADR-0008](adr/0008-load
 npm start -w load-generator
 ```
 
+For measured runs, build it and start it without ts-node and pretty printing, like the game server: `npm run build -w load-generator`, then `npm run start:prod -w load-generator`.
+
 Open http://localhost:5173/lab, pick a preset (`steady`, `ramp`, `spike`, `steps`, `duplicate-cashouts`) or edit the scenario, and press Start. The page shows bots connected, requests and errors per second and player latency over the last 10 seconds; the charts are in the **Players** section of the Grafana dashboard, next to the server metrics.
 
 - **Steps** set the load over time as `bots x seconds`: `500x300, 1000x300, 2000x300, 4000x300` holds each level for five minutes (the `steps` preset, for experiment 1); a last step without seconds runs until stopped. Between steps bots join or leave at the ramp rate.
