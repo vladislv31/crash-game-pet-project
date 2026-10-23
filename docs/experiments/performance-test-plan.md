@@ -117,7 +117,9 @@ Done 2026-10-22 at commit `dd4f6aa`: game server and generator both built and st
 - `pg_stat_statements` keeps totals since the database started (here ~30 minutes of the server: 61 rounds, 31 reconciliations); reset it right before each run so the totals belong to that run.
 - Conclusion: the chain works end to end. This is the floor: p99 under 50 ms, jitter a few ms, the database idle.
 
-**Calibration: connections only (`betProbability = 0`), 500 → 1000 → 2000 bots, stopped after 2000.** Generator CPU is read on rounds whose flight lasts at least the 20 s `rate()` window, so the betting phase does not dilute it.
+**Calibration: connections only (`betProbability = 0`), two runs.** Generator CPU is read on rounds whose flight lasts at least the 20 s `rate()` window, so the betting phase does not dilute it. Generator lag on the graph includes a ~10 ms floor from the 10 ms sampling resolution; the honesty limit is 20 ms above it (0.03 on the graph).
+
+Run 1 (2026-10-22), 500 → 1000 → 2000 bots:
 
 | Bots | Generator CPU | Generator lag p99 (graph) | Server                                                          |
 | ---- | ------------- | ------------------------- | --------------------------------------------------------------- |
@@ -125,8 +127,17 @@ Done 2026-10-22 at commit `dd4f6aa`: game server and generator both built and st
 | 1000 | 0.27–0.29     | up to 0.019               | within SLO                                                      |
 | 2000 | 0.33          | up to 0.019               | event loop lag above 50 ms, tick delay at times ~50 ms, CPU 0.3 |
 
+Run 2 (2026-10-23), up to 6000 bots, with the SLO row on the dashboard:
+
+| Bots | Generator CPU | Generator lag p99 (graph) | Server                                                                                               |
+| ---- | ------------- | ------------------------- | ---------------------------------------------------------------------------------------------------- |
+| 4000 | up to ~0.4    | ~0.02 (honest)            | within SLO                                                                                           |
+| 6000 | up to ~0.4    | up to ~0.04 (not honest)  | 99.9% of ticks within 50 ms (objective 99%), event loop lag up to ~50 ms on the graph, CPU up to 0.5 |
+
 - From 500 and 1000, generator CPU fits a constant part plus a cost per message: ~0.036 + ~24 µs per message, which would put 2000 at 0.52 and the 0.7 limit near 2700 bots. At 2000 it measured 0.33.
 - The server sent 10 ticks per second and every bot received every tick (bot ticks / server ticks ≈ 1), so at 2000 the generator did handle 20 000 messages per second: the cost per message falls with load (~5 µs for the added messages). Not established why: more messages per event loop pass, or macOS moving the process from efficiency to performance cores, which would make "share of a core" a different unit at low and high load. A per-message cost holds only at the load it was measured at.
-- The generator's lag follows the size of a tick burst, not average CPU, so the lag threshold may bind before CPU 0.7.
-- Conclusion: one generator is honest up to at least 2000 bots on this machine. The server broke its thresholds first, at 2000: a likely cause is the broadcast loop, which sends to every socket in one synchronous pass (not checked yet: the hypothesis for step 3). The generator's own ceiling stays unknown.
-- Not recorded: tick delay p99 over a 5-minute window, Broadcast duration p99, reconciliation after the calibration run, repeats.
+- The generator's lag follows the size of a tick burst, not average CPU: in run 2 its lag crossed the limit at 6000 while CPU stayed near 0.4.
+- The runs disagree on the server: run 1 saw lag above 50 ms at 2000, run 2 kept the tick objective at 6000. Not established why; candidates are other load on the laptop during run 1 and macOS placing the processes on different core types. Run 1 judged the server by eye, run 2 by the share of ticks within 50 ms.
+- Conclusion (run 2): one generator is honest up to ~4000 bots on this machine, its limit lies between 4000 and 6000. The server still meets the tick objective at 6000, so the generator gives in first. Above ~4000 bots, player-side numbers (tick jitter, player latency) are not trustworthy; server-side metrics and the SLO row still are.
+- Step 3 hint: server event loop lag tracks the broadcast loop, which sends to every socket in one synchronous pass; ~40 ms at 6000 sockets is ~6–7 µs per send.
+- Not recorded: Broadcast duration p99, reconciliation after the calibration runs, a third run in a quiet machine to settle the disagreement.
