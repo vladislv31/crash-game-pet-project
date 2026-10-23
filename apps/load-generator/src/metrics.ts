@@ -13,7 +13,7 @@ export class GeneratorMetrics implements BotRecorder {
     name: 'loadgen_request_duration_seconds',
     help: 'From the moment a bot planned a request to its answer, by type and result',
     labelNames: ['type', 'result'],
-    buckets: [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+    buckets: [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.25, 0.5, 1, 2.5, 5, 10],
     registers: [this.registry],
   });
 

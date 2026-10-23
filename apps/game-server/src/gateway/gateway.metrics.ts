@@ -27,7 +27,7 @@ export class GatewayMetrics {
       name: 'crash_ws_request_duration_seconds',
       help: 'Time from receipt of a client message to the response, by message type and result',
       labelNames: ['type', 'result'],
-      buckets: [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
+      buckets: [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.25, 0.5, 1, 2.5, 5],
       registers,
     });
     this.broadcastDuration = new Histogram({

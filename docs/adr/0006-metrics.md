@@ -40,7 +40,7 @@ The player-facing p99 is measured by the load generator in Phase 4 (it sees the 
 | `crash_round_write_failures_total{operation}`             | counter   | failed round writes: `create`, `mark_started`, `mark_crashed` (every failed attempt of the retried crash write)                                                                                                                                                                  |
 | `crash_db_pool_connections{state}`                        | gauge     | the app's PostgreSQL pool at scrape time: `total`, `idle`, `waiting` (requests queued for a connection)                                                                                                                                                                          |
 
-Buckets: request duration 1, 2.5, 5, 10, 25, 50, 100, 250, 500 ms, 1, 2.5, 5 s (the app transaction limit is 3 s); broadcast duration 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250 ms.
+Buckets: request duration 1, 2.5, 5, 10, 25, 50, 100, 200, 250, 500 ms, 1, 2.5, 5 s (the app transaction limit is 3 s; 200 ms is the latency objective, so the share of requests within it is counted, not interpolated); broadcast duration 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250 ms.
 
 What the gateway, betting and database metrics show:
 

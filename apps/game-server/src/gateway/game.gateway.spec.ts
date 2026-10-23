@@ -981,6 +981,39 @@ describe('GameGateway', () => {
           }),
         ).toBe(1);
       });
+
+      it('has a bucket boundary at the 200 ms latency objective', async () => {
+        const { connect, store, registry } = setup();
+        const socket = await connect();
+        const clock = fakeClock();
+        let finishWrite = () => undefined as void;
+        const realPlaceBet = store.placeBet.bind(store);
+        jest
+          .spyOn(store, 'placeBet')
+          .mockImplementationOnce(
+            input => new Promise(resolve => (finishWrite = () => resolve(realPlaceBet(input)))),
+          );
+
+        socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+        await flush();
+        clock.advance(200);
+        finishWrite();
+        await flush();
+
+        const labels = { type: 'bet', result: 'accepted' };
+        expect(
+          await sample(registry, 'crash_ws_request_duration_seconds_bucket', {
+            ...labels,
+            le: 0.1,
+          }),
+        ).toBe(0);
+        expect(
+          await sample(registry, 'crash_ws_request_duration_seconds_bucket', {
+            ...labels,
+            le: 0.2,
+          }),
+        ).toBe(1);
+      });
     });
 
     describe('broadcast duration', () => {

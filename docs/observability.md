@@ -45,6 +45,23 @@ docker compose --profile observability up -d
 - Prometheus: http://localhost:9090 (`/targets` shows whether the game server is scraped)
 - Grafana: http://localhost:3001, dashboard **Game server**
 
+## Service level objectives
+
+What the server promises, measured on the server alone, so they hold in production where no load generator runs. Each one is a share of good events, not a percentile: a share is exact when the threshold is a bucket boundary, while a percentile is interpolated inside a bucket. In production they would be read over 30 days, and the rest up to 100% is the error budget. The **Service level objectives** row at the top of the dashboard shows them as single numbers over the selected time range (`$__range`), so selecting a load run shows that run.
+
+| Objective                 | Target                                                     | Measured by                                                                          |
+| ------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Bets succeed              | ≥ 99.9% answered without `internal_error` or `unavailable` | `crash_ws_request_duration_seconds_count`, `type="bet"`; rejections count as answers |
+| Cash-outs succeed         | ≥ 99.9%                                                    | the same, `type="cashout"`                                                           |
+| Bets within 200 ms        | ≥ 99.9%                                                    | `crash_ws_request_duration_seconds_bucket{le="0.2"}` over `_count`, `type="bet"`     |
+| Cash-outs within 200 ms   | ≥ 99.9%                                                    | the same, `type="cashout"`                                                           |
+| Ticks within 50 ms        | ≥ 99% fire at most 50 ms late                              | `crash_tick_delay_seconds_bucket{le="0.05"}` over `_count`                           |
+| Money mismatches          | 0                                                          | `crash_reconciliation_mismatches`, the highest value in the range                    |
+| Since last reconciliation | ≤ 5 minutes (it runs every minute)                         | `crash_reconciliation_last_success_timestamp_seconds`                                |
+| Stuck bets                | 0                                                          | `crash_unsettled_bets`, the highest value in the range                               |
+
+Bets and cash-outs are kept apart: thousands of good bets would hide a few failed cash-outs, and a cash-out is the player's win. Server latency leaves out the network and the client, so players see a little more; the load runs check the player side with their own SLOs ([performance test plan](experiments/performance-test-plan.md)).
+
 ## Dashboard panels
 
 | Panel                                                 | What it shows                                                                                                                                                                                                                                                               |

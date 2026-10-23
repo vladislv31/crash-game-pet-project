@@ -51,6 +51,623 @@
   "links": [],
   "panels": [
     {
+      "id": 38,
+      "type": "row",
+      "title": "Service level objectives (over the selected time range)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "id": 39,
+      "type": "stat",
+      "title": "Bets succeed",
+      "description": "Share of bets the server answered without internal_error or unavailable; rejections (no balance, betting closed) are answers, not failures. Objective: at least 99.9%.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0.999
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "nan",
+                "result": {
+                  "text": "no requests",
+                  "color": "text",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "no requests",
+                  "color": "text",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "noValue": "no requests"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum(increase(crash_ws_request_duration_seconds_count{job=\"game-server\", type=\"bet\", result!~\"internal_error|unavailable\"}[$__range]))\n  / sum(increase(crash_ws_request_duration_seconds_count{job=\"game-server\", type=\"bet\"}[$__range]))",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "type": "stat",
+      "title": "Cash-outs succeed",
+      "description": "Share of cash-outs answered without internal_error or unavailable. Objective: at least 99.9%.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 3,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0.999
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "nan",
+                "result": {
+                  "text": "no requests",
+                  "color": "text",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "no requests",
+                  "color": "text",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "noValue": "no requests"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum(increase(crash_ws_request_duration_seconds_count{job=\"game-server\", type=\"cashout\", result!~\"internal_error|unavailable\"}[$__range]))\n  / sum(increase(crash_ws_request_duration_seconds_count{job=\"game-server\", type=\"cashout\"}[$__range]))",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "type": "stat",
+      "title": "Bets within 200 ms",
+      "description": "Share of bets answered within 200 ms on the server, counted from the 0.2 s bucket, not interpolated. Objective: at least 99.9%.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 6,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0.999
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "nan",
+                "result": {
+                  "text": "no requests",
+                  "color": "text",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "no requests",
+                  "color": "text",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "noValue": "no requests"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum(increase(crash_ws_request_duration_seconds_bucket{job=\"game-server\", type=\"bet\", le=\"0.2\"}[$__range]))\n  / sum(increase(crash_ws_request_duration_seconds_count{job=\"game-server\", type=\"bet\"}[$__range]))",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
+      "id": 42,
+      "type": "stat",
+      "title": "Cash-outs within 200 ms",
+      "description": "Share of cash-outs answered within 200 ms on the server. Objective: at least 99.9%.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 9,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0.999
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "nan",
+                "result": {
+                  "text": "no requests",
+                  "color": "text",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "no requests",
+                  "color": "text",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "noValue": "no requests"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum(increase(crash_ws_request_duration_seconds_bucket{job=\"game-server\", type=\"cashout\", le=\"0.2\"}[$__range]))\n  / sum(increase(crash_ws_request_duration_seconds_count{job=\"game-server\", type=\"cashout\"}[$__range]))",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
+      "id": 43,
+      "type": "stat",
+      "title": "Ticks within 50 ms",
+      "description": "Share of ticks fired at most 50 ms later than planned. Objective: at least 99%.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 12,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0.99
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum(increase(crash_tick_delay_seconds_bucket{job=\"game-server\", le=\"0.05\"}[$__range]))\n  / sum(increase(crash_tick_delay_seconds_count{job=\"game-server\"}[$__range]))",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
+      "id": 44,
+      "type": "stat",
+      "title": "Money mismatches",
+      "description": "Most broken money invariants any reconciliation found in the range, all types together. Objective: 0.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 15,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum(max_over_time(crash_reconciliation_mismatches{job=\"game-server\"}[$__range]))",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
+      "id": 45,
+      "type": "stat",
+      "title": "Since last reconciliation",
+      "description": "Time since the last completed reconciliation, now. It runs every minute; objective: at most 5 minutes.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 18,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "time() - max(crash_reconciliation_last_success_timestamp_seconds{job=\"game-server\"})",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
+      "id": 46,
+      "type": "stat",
+      "title": "Stuck bets",
+      "description": "Most ACTIVE bets of earlier rounds that a settlement sweep could not settle, in the range. Objective: 0.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 21,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "max(max_over_time(crash_unsettled_bets{job=\"game-server\"}[$__range]))",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
       "id": 1,
       "type": "row",
       "title": "Game loop",
@@ -59,7 +676,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 0
+        "y": 5
       },
       "panels": []
     },
@@ -76,7 +693,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 1
+        "y": 6
       },
       "fieldConfig": {
         "defaults": {
@@ -144,7 +761,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 1
+        "y": 6
       },
       "fieldConfig": {
         "defaults": {
@@ -190,7 +807,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 9
+        "y": 14
       },
       "panels": []
     },
@@ -207,7 +824,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 10
+        "y": 15
       },
       "fieldConfig": {
         "defaults": {
@@ -266,7 +883,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 10
+        "y": 15
       },
       "fieldConfig": {
         "defaults": {
@@ -316,7 +933,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 18
+        "y": 23
       },
       "fieldConfig": {
         "defaults": {
@@ -375,7 +992,7 @@
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 18
+        "y": 23
       },
       "fieldConfig": {
         "defaults": {
@@ -425,7 +1042,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 18
+        "y": 23
       },
       "fieldConfig": {
         "defaults": {
@@ -484,7 +1101,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 18
+        "y": 23
       },
       "fieldConfig": {
         "defaults": {
@@ -539,7 +1156,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 26
+        "y": 31
       },
       "panels": []
     },
@@ -556,7 +1173,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 27
+        "y": 32
       },
       "fieldConfig": {
         "defaults": {
@@ -615,7 +1232,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 27
+        "y": 32
       },
       "fieldConfig": {
         "defaults": {
@@ -683,7 +1300,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 27
+        "y": 32
       },
       "fieldConfig": {
         "defaults": {
@@ -733,7 +1350,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 35
+        "y": 40
       },
       "fieldConfig": {
         "defaults": {
@@ -783,7 +1400,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 35
+        "y": 40
       },
       "fieldConfig": {
         "defaults": {
@@ -842,7 +1459,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 43
+        "y": 48
       },
       "fieldConfig": {
         "defaults": {
@@ -892,7 +1509,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 43
+        "y": 48
       },
       "fieldConfig": {
         "defaults": {
@@ -942,7 +1559,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 43
+        "y": 48
       },
       "fieldConfig": {
         "defaults": {
@@ -997,7 +1614,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 51
+        "y": 56
       },
       "panels": []
     },
@@ -1014,7 +1631,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 52
+        "y": 57
       },
       "fieldConfig": {
         "defaults": {
@@ -1064,7 +1681,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 52
+        "y": 57
       },
       "fieldConfig": {
         "defaults": {
@@ -1132,7 +1749,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 52
+        "y": 57
       },
       "fieldConfig": {
         "defaults": {
@@ -1182,7 +1799,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 60
+        "y": 65
       },
       "fieldConfig": {
         "defaults": {
@@ -1236,7 +1853,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 60
+        "y": 65
       },
       "fieldConfig": {
         "defaults": {
@@ -1286,7 +1903,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 68
+        "y": 73
       },
       "panels": []
     },
@@ -1303,7 +1920,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 69
+        "y": 74
       },
       "fieldConfig": {
         "defaults": {
@@ -1353,7 +1970,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 69
+        "y": 74
       },
       "fieldConfig": {
         "defaults": {
@@ -1403,7 +2020,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 77
+        "y": 82
       },
       "fieldConfig": {
         "defaults": {
@@ -1453,7 +2070,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 77
+        "y": 82
       },
       "fieldConfig": {
         "defaults": {
@@ -1503,7 +2120,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 77
+        "y": 82
       },
       "fieldConfig": {
         "defaults": {
@@ -1549,7 +2166,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 85
+        "y": 90
       },
       "panels": []
     },
@@ -1566,7 +2183,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 86
+        "y": 91
       },
       "fieldConfig": {
         "defaults": {
@@ -1639,7 +2256,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 94
+        "y": 99
       },
       "panels": []
     },
@@ -1656,7 +2273,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 95
+        "y": 100
       },
       "fieldConfig": {
         "defaults": {
@@ -1706,7 +2323,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 95
+        "y": 100
       },
       "fieldConfig": {
         "defaults": {
@@ -1774,7 +2391,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 95
+        "y": 100
       },
       "fieldConfig": {
         "defaults": {

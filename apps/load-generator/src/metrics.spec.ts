@@ -32,6 +32,16 @@ describe('GeneratorMetrics', () => {
     );
   });
 
+  it('has a request latency bucket boundary at the 200 ms objective', async () => {
+    const metrics = new GeneratorMetrics();
+
+    metrics.request('bet', 'success', 200);
+
+    const name = 'loadgen_request_duration_seconds_bucket';
+    expect(await sample(metrics, name, { type: 'bet', result: 'success', le: '0.1' })).toBe(0);
+    expect(await sample(metrics, name, { type: 'bet', result: 'success', le: '0.2' })).toBe(1);
+  });
+
   it('records how late ticks arrive, never below zero', async () => {
     const metrics = new GeneratorMetrics();
 
