@@ -1,7 +1,7 @@
 # Development state
 
 **Current phase:** 4 — Load generator and test dashboard (implemented, first runs done)
-**Last updated:** 2026-10-23
+**Last updated:** 2026-10-25
 
 ## Done
 
@@ -68,7 +68,7 @@
   - dashboard: request rate and outcomes (success, rejected, failed) and failed share
   - first live run by the owner: the `spike` preset failed bets with `internal_error` because the 10-connection database pool timed out after 1 s; money stayed safe (failed bets roll back). Next: a configurable pool size to measure where the pool stops being the limit
 
-- Performance testing ([plan](experiments/performance-test-plan.md)), run by the owner step by step: SLOs, environment and run protocol recorded (step 0, 2026-10-15); generator runs built without ts-node; step 1 done 2026-10-23: the chain works, one generator is honest up to ~4000 bots, the server meets the tick objective at 6000 (an earlier run disagreed, a quiet repeat is pending); server SLOs on the dashboard. Next: step 2, baseline
+- Performance testing ([plan](experiments/performance-test-plan.md)), run by the owner step by step: SLOs, environment and run protocol recorded (step 0, 2026-10-15); generator runs built without ts-node; step 1 done 2026-10-23: the chain works, one generator is honest up to ~4000 bots, the server meets the tick objective at 6000 (an earlier run disagreed, a quiet repeat is pending); server SLOs on the dashboard; step 2 done 2026-10-25: baseline recorded (~3.3 requests/s, p99 ~50 ms, CPU 3–6%), reconciliation is the largest database consumer at this load. Next: step 3, fan-out
 
 ## Backlog (before experiments)
 

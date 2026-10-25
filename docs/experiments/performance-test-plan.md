@@ -141,3 +141,40 @@ Run 2 (2026-10-23), up to 6000 bots, with the SLO row on the dashboard:
 - Conclusion (run 2): one generator is honest up to ~4000 bots on this machine, its limit lies between 4000 and 6000. The server still meets the tick objective at 6000, so the generator gives in first. Above ~4000 bots, player-side numbers (tick jitter, player latency) are not trustworthy; server-side metrics and the SLO row still are.
 - Step 3 hint: server event loop lag tracks the broadcast loop, which sends to every socket in one synchronous pass; ~40 ms at 6000 sockets is ~6–7 µs per send.
 - Not recorded: Broadcast duration p99, reconciliation after the calibration runs, a third run in a quiet machine to settle the disagreement.
+
+### Step 2. Baseline
+
+Done 2026-10-25 at commit `5ae5654`, game server and generator rebuilt (with the 0.2 s latency bucket). Two runs of the `steady` preset (100 bots, 80% bet chance, half with auto-cashout, targets 1.2x–5x) as `100x660`: one minute of warm-up and ten of steady state, processes restarted between runs. The database held earlier runs: 44 908 users, 72 725 bets, 146 322 ledger entries, 2024 rounds after both runs.
+
+**Request rate from the model.** A round lasts ~27 s, so bets = 100 × 0.8 / 27 ≈ 2.9 per second. Only manual bets (half) send a cash-out, and the chance to reach a target x is 0.99 / x averaged over the targets, 0.99 × ln(5 / 1.2) / (5 − 1.2) ≈ 0.37 (not the chance at the mean target). Cash-outs ≈ 2.9 × 0.5 × 0.37 ≈ 0.54 per second, ~3.4 requests per second in total. Measured: 3.31.
+
+**Normal values** (both runs alike, apart from rare spikes):
+
+| What                       | Baseline                                                             |
+| -------------------------- | -------------------------------------------------------------------- |
+| Requests                   | ~3.3 per second (bets and cash-outs)                                 |
+| Bet p99 / cash-out p99     | ~50 ms / ~30 ms, on the server and on the bots; one spike to ~200 ms |
+| Tick delay p99             | under 10 ms                                                          |
+| Server SLOs                | all met                                                              |
+| Server event loop lag p99  | up to ~12 ms on the graph, ~2 ms above the 10 ms floor               |
+| Server CPU                 | 3–6% of a core                                                       |
+| Database pool              | 10 connections, 0 waiting                                            |
+| Reconciliation after a run | OK                                                                   |
+
+- p99 values near 25, 50 and 100 ms sit on bucket boundaries: "~50 ms" means somewhere in the 25–50 ms bucket. A later change counts as significant when p99 moves to another bucket or an SLO share drops below its target; finer differences are below what the histogram resolves.
+- Bets look slower than cash-outs, but not in the database: the statements of a bet (insert bet 0.38 ms, debit, ledger insert 0.28 ms) and of a cash-out (update bet, credit, ledger insert) differ by tenths of a millisecond. The 50 / 30 ms difference is within the bucket resolution or outside the database.
+- The ~200 ms spike is not explained. The first candidate is the reconciliation, which runs once a minute; next are GC and other load on the laptop.
+
+**Database time** (`pg_stat_statements`, both runs, top 5 by total time):
+
+| Calls | Mean    | Total | Statement                                 |
+| ----- | ------- | ----- | ----------------------------------------- |
+| 51    | 100 ms  | 5.1 s | reconciliation: ledger entries check      |
+| 51    | 100 ms  | 5.1 s | reconciliation: bets against ledger check |
+| 51    | 63 ms   | 3.2 s | reconciliation: balances against ledger   |
+| 3904  | 0.38 ms | 1.5 s | insert bet                                |
+| 5132  | 0.28 ms | 1.4 s | insert ledger entry                       |
+
+- Reconciliation is the largest database consumer at this load: its five statements took ~14.7 s, against ~3 s for bet and ledger inserts. It reads `users`, `bets` and `ledger_entries` whole, so its cost follows the size of the history, not the load: ~290 ms a run at 73 000 bets. Hypothesis for step 7: reconciliation time grows linearly with the number of bets.
+- The pool is idle: ~3.4 transactions per second of a few milliseconds each keep about 0.02 connections busy (Little's law).
+- Found on the way: after a restart the "Since last reconciliation" panels showed ~55 years, because the timestamp gauge is 0 until the first run. The panels now drop the zero and show no data until then.
