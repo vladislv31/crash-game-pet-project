@@ -545,7 +545,7 @@
       "id": 45,
       "type": "stat",
       "title": "Since last reconciliation",
-      "description": "Time since the last completed reconciliation, now. It runs every minute; objective: at most 5 minutes.",
+      "description": "Time since the last completed reconciliation, now. It runs every minute; objective: at most 5 minutes. No data until the first reconciliation after a start.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -575,7 +575,8 @@
           },
           "color": {
             "mode": "thresholds"
-          }
+          },
+          "noValue": "no check yet"
         },
         "overrides": []
       },
@@ -598,7 +599,7 @@
             "uid": "prometheus"
           },
           "refId": "A",
-          "expr": "time() - max(crash_reconciliation_last_success_timestamp_seconds{job=\"game-server\"})",
+          "expr": "time() - max(crash_reconciliation_last_success_timestamp_seconds{job=\"game-server\"} > 0)",
           "instant": true,
           "range": false
         }
@@ -2002,7 +2003,7 @@
             "uid": "prometheus"
           },
           "refId": "A",
-          "expr": "time() - max(crash_reconciliation_last_success_timestamp_seconds)",
+          "expr": "time() - max(crash_reconciliation_last_success_timestamp_seconds > 0)",
           "legendFormat": "seconds"
         }
       ]
