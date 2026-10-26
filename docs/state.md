@@ -73,6 +73,7 @@
 ## Backlog (before experiments)
 
 - WebSocket hardening: `maxPayload`, per-socket message rate limit, ignore messages before auth, ping/pong to drop dead connections
+- Slow consumer protection (ADR first: which messages may be dropped and when a client is disconnected): the broadcast sends to every socket without checking `bufferedAmount`, so a client that stops reading makes the server queue its ticks in memory. Skip ticks to a socket whose `bufferedAmount` is above a soft limit (only the latest multiplier matters), never drop bet and cash-out answers, balances or `round:crashed`, close the socket above a hard limit or after staying above the soft one for a while (the client reconnects and gets a snapshot); metrics for skipped ticks and slow-consumer disconnects
 - Rate limit `POST /auth/login` (every new username creates a user)
 - Partial index on `bets` for `status = 'ACTIVE'`: the settlement sweep (`findUnsettledBets`) reads all of `ix_bets_round_status` every round, about 30 ms at 1M bets and growing with history
 - End-to-end WebSocket test through the real app (login → bet → cashout)
