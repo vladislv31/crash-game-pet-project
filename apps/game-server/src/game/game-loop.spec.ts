@@ -90,6 +90,26 @@ describe('GameLoop', () => {
     ]);
   });
 
+  it('keeps the first tick on time when announcing the start takes a while', () => {
+    const tickTimes: number[] = [];
+    const { loop } = createLoop([300], {
+      onEvent: event => {
+        if (event.type === 'started') {
+          // Broadcasting the start to every socket is synchronous and takes time.
+          jest.advanceTimersByTime(30);
+        }
+        if (event.type === 'tick') {
+          tickTimes.push(Date.now());
+        }
+      },
+    });
+    loop.start();
+
+    jest.advanceTimersByTime(BETTING_MS + 2 * TICK_MS);
+
+    expect(tickTimes).toEqual([BETTING_MS + TICK_MS, BETTING_MS + 2 * TICK_MS]);
+  });
+
   it('crashes exactly at the crash time', () => {
     const { loop, events } = createLoop([200]);
     loop.start();

@@ -150,8 +150,8 @@ export class GameLoop {
   private startRound(round: Round, startedAt: number): void {
     round.start(startedAt);
 
-    this.options.onEvent({ type: 'started', roundId: round.id, startedAt });
     this.tickTimer = setInterval(() => this.tick(round), this.tickMs);
+    this.options.onEvent({ type: 'started', roundId: round.id, startedAt });
     this.scheduleCrash(round);
   }
 
