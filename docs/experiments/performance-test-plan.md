@@ -203,3 +203,28 @@ Done 2026-10-26 at commit `b323d8f`. Question: what does the server do when clie
 - On this laptop a slow consumer exhausts kernel network memory and gets its connections reset before the server's own queue grows. This is an artifact of the setup: both ends of every connection share one kernel. In production a slow client's receive buffer is on its own device, the server holds only its send buffer, and the queue would then grow in Node (Buffered bytes, then memory and GC).
 - The kernel denied memory to all sockets alike, so healthy clients on the same machine would likely be reset too.
 - Open: whether 100–200 frozen bots fill their per-socket kernel limits without exhausting the total, so the queue reaches Node and Buffered bytes grows. The per-socket limit is also counted in mbufs, so it may be higher than 128 KB of payload.
+
+### Step 3. Fan-out (in progress)
+
+Started 2026-10-26. Connections only (`betProbability = 0`), server metrics only: above ~4000 bots the generator's own numbers are not trusted (step 1), while tick delay, broadcast duration and memory are measured by the server itself. Control metrics for each step: server Connections equal to the bots, Buffered bytes at 0, no new "requests for memory denied" in `netstat -m`. All three held in every run.
+
+**Run 1:** `3000x200, 5000x200, 7000x200, 9000x200`. The tick objective (99% of ticks within 50 ms) held on every step.
+
+| Bots | Broadcast of a tick (mean)              | Server RSS   |
+| ---- | --------------------------------------- | ------------ |
+| 3000 |                                         | ~250 MiB     |
+| 5000 |                                         | ~280 MiB     |
+| 7000 |                                         | ~310–330 MiB |
+| 9000 | ~50 ms (p99 ~100 ms, spikes to ~175 ms) | ~335 MiB     |
+
+- A broadcast costs ~5.6 µs per socket (50 ms / 9000), so its mean reaches the 100 ms tick period near 18 000 sockets.
+- Memory grows by ~14–15 KB per connection (the slope between steps); at 10 000 connections that is ~150 MB, so memory is not the first limit. After a run RSS stays high for a few minutes before Node returns it.
+- Broadcast duration p99 for `round:betting`, `round:started` and `round:crashed` sits on bucket boundaries (25, 50, 100 ms): one event per round leaves a single sample per window. Read the tick series, or the mean from `_sum` / `_count`.
+- **The tick objective misses what the last player sees.** `crash_tick_delay_seconds` measures how late the tick timer fired, not how long the broadcast took. The broadcast is one synchronous loop, so the last socket gets each tick a broadcast later than the first: ~50 ms at 9000 on average, ~100 ms at p99, every tick. The offset is constant, so neither tick delay nor the players' jitter shows it. Measured by "the last player gets the tick within 50 ms" (p99 broadcast within 50 ms), capacity would be ~4500 rather than 9000 or more. Capacity depends on which of the two the objective means; to decide before the step's conclusion.
+
+**Code change: the first tick of every round was late by the start broadcast.** The game loop announced `started` (a synchronous broadcast to every socket) and only then armed the tick interval, so the first tick of each round fired a broadcast late: ~12–15 ms at a few thousand sockets, more with every connection. One first tick per round is ~1% of all ticks (a mean flight is ~93 ticks), the whole budget of the tick objective, so once the start broadcast passed 50 ms the objective broke on first ticks alone, and windows with many short rounds broke it sooner.
+
+- Fix: the game loop arms the tick interval before it announces the start, so the start broadcast no longer moves the first tick (a test covers it: a listener that takes 30 ms on `started` leaves the ticks at 100 and 200 ms after the start).
+- Before and after with the same scenario: the tick delay spikes above 50 ms present before the change were gone after it.
+
+Open: the capacity under the chosen definition of the tick objective; the run up to 12 000 and back down to 4000 for recovery.
