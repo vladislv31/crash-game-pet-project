@@ -178,3 +178,28 @@ Done 2026-10-25 at commit `5ae5654`, game server and generator rebuilt (with the
 - Reconciliation is the largest database consumer at this load: its five statements took ~14.7 s, against ~3 s for bet and ledger inserts. It reads `users`, `bets` and `ledger_entries` whole, so its cost follows the size of the history, not the load: ~290 ms a run at 73 000 bets. Hypothesis for step 7: reconciliation time grows linearly with the number of bets.
 - The pool is idle: ~3.4 transactions per second of a few milliseconds each keep about 0.02 connections busy (Little's law).
 - Found on the way: after a restart the "Since last reconciliation" panels showed ~55 years, because the timestamp gauge is 0 until the first run. The panels now drop the zero and show no data until then.
+
+### Slow consumer (before step 3)
+
+Done 2026-10-26 at commit `b323d8f`. Question: what does the server do when clients stop reading? The server sends every tick to every socket with `client.send` and never checks `bufferedAmount`, so a client that does not read could make the server queue data in memory.
+
+**Setup.** 1000 bots, connections only, a last step without a duration so the run cannot end during the freeze. The generator process was frozen with `kill -STOP $(lsof -ti tcp:3100 -sTCP:LISTEN)`: every socket stays open, none reads. Watched: server Connections, Buffered bytes and Memory; kernel network memory with `netstat -m`.
+
+**Observed.**
+
+| Moment            | Kernel network memory       | Requests for memory denied |
+| ----------------- | --------------------------- | -------------------------- |
+| during the freeze | 162 → 182 MB, 92–93% in use | 19 (from before the run)   |
+| ~3 minutes in     | all connections reset       | 19 → 612                   |
+| after the reset   | 22 MB, 1.9% in use          | 612                        |
+
+- The server saw every socket close with code 1006: no close frame, the TCP connection was reset. Neither side called `close`; macOS has no TCP persist timeout (`net.inet.tcp.max_persist_timeout: 0`) and keepalive is off, so no timer closed them.
+- Server Buffered bytes stayed at 0: the kernel reset the connections before any queue reached Node.
+
+**Why.** The kernel keeps unread ticks in socket buffers on both ends and accounts them in mbufs: a ~100-byte tick takes a 256-byte mbuf. At ~35% of the time in flight, 10 ticks per second cost ~900 bytes of kernel memory per second per connection, ~160 KB in 3 minutes, ~160 MB for 1000 connections: the ~182 MB the kernel held when it began denying memory and reset the connections. Small messages cost the kernel 2–3 times their size.
+
+**Conclusion.**
+
+- On this laptop a slow consumer exhausts kernel network memory and gets its connections reset before the server's own queue grows. This is an artifact of the setup: both ends of every connection share one kernel. In production a slow client's receive buffer is on its own device, the server holds only its send buffer, and the queue would then grow in Node (Buffered bytes, then memory and GC).
+- The kernel denied memory to all sockets alike, so healthy clients on the same machine would likely be reset too.
+- Open: whether 100–200 frozen bots fill their per-socket kernel limits without exhausting the total, so the queue reaches Node and Buffered bytes grows. The per-socket limit is also counted in mbufs, so it may be higher than 128 KB of payload.
