@@ -305,6 +305,58 @@ describe('GameLoopService', () => {
     });
   });
 
+  describe('tick delivery delay', () => {
+    async function deliveryDelays(): Promise<{ count: number; sum: number }> {
+      const { values } = await metrics.tickDeliveryDelay.get();
+      const value = (suffix: string) =>
+        values.find(entry => entry.metricName === `crash_tick_delivery_delay_seconds_${suffix}`)
+          ?.value;
+      return { count: value('count') ?? 0, sum: value('sum') ?? 0 };
+    }
+
+    function lagPerformanceNow(): { add: (ms: number) => void } {
+      const now = performance.now.bind(performance);
+      let lag = 0;
+      jest.spyOn(performance, 'now').mockImplementation(() => now() + lag);
+      return { add: ms => (lag += ms) };
+    }
+
+    it('measures every tick of a round and nothing else', async () => {
+      await start();
+
+      await jest.advanceTimersByTimeAsync(BETTING_MS + RUNNING_MS);
+
+      const ticks = gameEvents.filter(event => event.type === 'tick').length;
+      expect(ticks).toBeGreaterThan(100);
+      expect(await deliveryDelays()).toEqual({ count: ticks, sum: 0 });
+    });
+
+    it('includes the time subscribers take to hand the tick out', async () => {
+      const clock = lagPerformanceNow();
+      service.subscribe(event => {
+        if (event.type === 'tick') {
+          clock.add(30);
+        }
+      });
+      await start();
+
+      await jest.advanceTimersByTimeAsync(BETTING_MS + 100);
+
+      expect(await deliveryDelays()).toEqual({ count: 1, sum: expect.closeTo(0.03, 6) });
+    });
+
+    it('includes how late the tick fired', async () => {
+      const clock = lagPerformanceNow();
+      await start();
+      await jest.advanceTimersByTimeAsync(BETTING_MS + 100);
+
+      clock.add(40);
+      await jest.advanceTimersByTimeAsync(100);
+
+      expect(await deliveryDelays()).toEqual({ count: 2, sum: expect.closeTo(0.04, 6) });
+    });
+  });
+
   describe('round write failures', () => {
     async function writeFailures(): Promise<Record<string, number>> {
       const metric = metrics.registry.getSingleMetric('crash_round_write_failures_total');

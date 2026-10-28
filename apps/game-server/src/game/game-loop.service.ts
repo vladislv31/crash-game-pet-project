@@ -110,6 +110,9 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
   }
 
   private handleEvent(event: GameEvent): void {
+    // Called synchronously from the game timers, so for a tick this reading is when it fired.
+    const firedAt = performance.now();
+    const tickDelayMs = event.type === 'tick' ? this.tickDelay.tick(firedAt) : null;
     this.record(event);
 
     // A failing subscriber must not stop the game loop or the other subscribers.
@@ -119,6 +122,11 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
       } catch (error) {
         this.logger.error({ event: 'game.subscriber_failed', type: event.type, err: error });
       }
+    }
+
+    if (tickDelayMs !== null) {
+      this.metrics.tickDelay.observe(tickDelayMs / 1000);
+      this.metrics.tickDeliveryDelay.observe((tickDelayMs + performance.now() - firedAt) / 1000);
     }
   }
 
@@ -148,14 +156,6 @@ export class GameLoopService implements OnApplicationBootstrap, BeforeApplicatio
           ?.set({ crashPoint: event.crashPoint, crashedAt: iso(event.crashedAt) });
         this.track(this.storeCrash(event.roundId, event.crashedAt));
         return;
-      case 'tick': {
-        // Called synchronously from the tick timer, so this reading is when the tick fired.
-        const delayMs = this.tickDelay.tick(performance.now());
-        if (delayMs !== null) {
-          this.metrics.tickDelay.observe(delayMs / 1000);
-        }
-        return;
-      }
     }
   }
 

@@ -15,6 +15,14 @@ export class Metrics {
     registers: [this.registry],
   });
 
+  /** What the last player waits for: the broadcast is one synchronous loop over every socket. */
+  readonly tickDeliveryDelay = new Histogram({
+    name: 'crash_tick_delivery_delay_seconds',
+    help: 'How much later than planned each round tick was handed out to every socket: tick delay plus broadcast',
+    buckets: [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1],
+    registers: [this.registry],
+  });
+
   constructor() {
     collectDefaultMetrics({
       register: this.registry,
