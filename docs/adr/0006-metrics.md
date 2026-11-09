@@ -56,7 +56,7 @@ What the gateway, betting and database metrics show:
 - The game loop fires ticks with `setInterval`, and Node schedules the next run from the moment the callback ran. The gap between two consecutive ticks minus the tick period is therefore how late that tick was.
 - `GameLoopService` measures it in its event handler: `onEvent` is called synchronously from the timer callback, so the handler's clock reading is the firing time. The game loop itself (a learning zone) is not changed; the service passes the tick period to it explicitly instead of relying on the loop's default.
 - Each round restarts the measurement at its `started` event, so its first tick is measured from the moment the tick timer was armed. Ticks only fire while the round runs, so betting and the pause never count.
-- Buckets: 1, 2.5, 5, 10, 25, 50, 100, 250, 500 ms, 1 s.
+- Buckets, the same for tick delay and tick delivery delay: 1, 2.5, 5, 7.5, 10, 15, 20, 25, 30, 40, 50, 60, 75, 100, 150, 200, 250, 500 ms, 1, 2.5 s. They are dense from 10 to 100 ms, around the 50 ms objective, where a fan-out run moves the percentiles; with only 25 and 50 ms boundaries there, every percentile was a straight line across one wide bucket.
 - Ticks are display-only (ADR-0002), so a late tick costs smoothness, not money. Event loop lag shows how busy the process is; tick delay shows how much of it reaches the game.
 
 ### Prometheus and Grafana
