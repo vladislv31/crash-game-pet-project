@@ -8,6 +8,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/auth': 'http://localhost:3000',
+      '/tournaments': 'http://localhost:3000',
       '/ws': { target: 'ws://localhost:3000', ws: true },
       // The test dashboard's load generator (ADR-0008).
       '/generator': {

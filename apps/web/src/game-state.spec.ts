@@ -1,4 +1,4 @@
-import type { BetView, ServerMessage } from '@crash/contracts';
+import type { BetView, ServerMessage, TournamentLeaderboardMessage } from '@crash/contracts';
 
 import { GameState, INITIAL_STATE, reduce } from './game-state';
 
@@ -319,6 +319,110 @@ describe('reduce', () => {
 
     it('counts snapshots, so the client knows when to retry', () => {
       expect(reconnected(connected()).snapshots).toBe(connected().snapshots + 1);
+    });
+  });
+
+  describe('tournament', () => {
+    const LEADERBOARD: TournamentLeaderboardMessage = {
+      type: 'tournament:leaderboard',
+      tournament: { id: 't-1', startedAt: 10_000, endedAt: null },
+      available: true,
+      top: [{ rank: 1, username: 'bob', points: 350 }],
+    };
+    const RANK = {
+      type: 'tournament:rank',
+      requestId: 'r1',
+      tournamentId: 't-1',
+      available: true,
+      rank: 57,
+      points: 350,
+    } as const;
+
+    it('has no tournament before the first leaderboard', () => {
+      expect(connected()).toMatchObject({ tournament: null, myRank: null });
+    });
+
+    it('stores the leaderboard', () => {
+      const state = receive(connected(), LEADERBOARD);
+
+      expect(state.tournament).toEqual({
+        tournament: LEADERBOARD.tournament,
+        available: true,
+        top: LEADERBOARD.top,
+      });
+    });
+
+    it('replaces the leaderboard with the newer one', () => {
+      const finished: TournamentLeaderboardMessage = {
+        ...LEADERBOARD,
+        tournament: { id: 't-1', startedAt: 10_000, endedAt: 20_000 },
+        available: false,
+        top: [],
+      };
+
+      const state = receive(connected(), LEADERBOARD, finished);
+
+      expect(state.tournament).toEqual({
+        tournament: finished.tournament,
+        available: false,
+        top: [],
+      });
+    });
+
+    it('stores the player rank and points for the tournament', () => {
+      const state = receive(connected(), LEADERBOARD, RANK);
+
+      expect(state.myRank).toEqual({ tournamentId: 't-1', rank: 57, points: 350 });
+    });
+
+    it('stores a rank without points', () => {
+      const state = receive(connected(), LEADERBOARD, { ...RANK, rank: null, points: 0 });
+
+      expect(state.myRank).toEqual({ tournamentId: 't-1', rank: null, points: 0 });
+    });
+
+    it('keeps the rank when the leaderboard of the same tournament arrives', () => {
+      const state = receive(connected(), RANK, LEADERBOARD);
+
+      expect(state.myRank).toEqual({ tournamentId: 't-1', rank: 57, points: 350 });
+    });
+
+    it('resets the rank when the leaderboard of another tournament arrives', () => {
+      const next: TournamentLeaderboardMessage = {
+        ...LEADERBOARD,
+        tournament: { id: 't-2', startedAt: 30_000, endedAt: null },
+      };
+
+      const state = receive(connected(), LEADERBOARD, RANK, next);
+
+      expect(state.myRank).toBeNull();
+    });
+
+    it('stores no rank when no tournament was ever run', () => {
+      const state = receive(connected(), { ...RANK, tournamentId: null, rank: null, points: 0 });
+
+      expect(state.myRank).toBeNull();
+    });
+
+    it('keeps the last known rank when the rank cannot be read', () => {
+      const state = receive(connected(), LEADERBOARD, RANK, {
+        ...RANK,
+        available: false,
+        rank: null,
+        points: 0,
+      });
+
+      expect(state.myRank).toEqual({ tournamentId: 't-1', rank: 57, points: 350 });
+    });
+
+    it('keeps the leaderboard and rank across a reconnect', () => {
+      const state = receive(
+        reduce(receive(connected(), LEADERBOARD, RANK), { type: 'socket_closed' }),
+        SNAPSHOT,
+      );
+
+      expect(state.tournament?.tournament.id).toBe('t-1');
+      expect(state.myRank?.rank).toBe(57);
     });
   });
 

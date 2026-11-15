@@ -3,8 +3,8 @@ import { Gauge, Histogram } from 'prom-client';
 
 import { Metrics } from '../metrics/metrics';
 
-/** `bet` and `cashout` as parsed; `invalid` when the message could not be parsed. */
-export type RequestType = 'bet' | 'cashout' | 'invalid';
+/** The client message type as parsed; `invalid` when the message could not be parsed. */
+export type RequestType = 'bet' | 'cashout' | 'tournament:rank' | 'invalid';
 
 /** What the gateway reads from its open sockets at scrape time. */
 export interface TrackedSocket {

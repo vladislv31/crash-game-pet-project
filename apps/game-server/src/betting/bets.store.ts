@@ -1,3 +1,4 @@
+import { TournamentScore } from '../tournaments/tournament';
 import { Bet } from './bet';
 
 export const BETS_STORE = Symbol('BETS_STORE');
@@ -27,19 +28,27 @@ export interface BetWithBalance {
   balance: string;
 }
 
+/** A payment. `score` is the player's tournament total, set only when this payment earned points (ADR-0009). */
+export interface PaidBet extends BetWithBalance {
+  score: TournamentScore | null;
+}
+
 export interface CashOutPrice {
   multiplier: number;
   payout: string;
 }
 
 export type CashOutAttempt =
-  | { status: 'paid' | 'already_paid'; bet: Bet; balance: string }
+  | ({ status: 'paid' } & PaidBet)
+  | { status: 'already_paid'; bet: Bet; balance: string }
   | { status: 'not_paid'; bet: Bet | null };
 
 export interface CashOutInput {
   betId: string;
   multiplier: number;
   payout: string;
+  /** The running tournament, which gets points if the bet is large enough; null when none runs. */
+  tournamentId: string | null;
 }
 
 /** Money-moving operations. Each one is atomic (ADR-0004). */
@@ -47,7 +56,7 @@ export interface BetsStore {
   /** Creates the bet only if it commits before its round's betting ends (ADR-0004). */
   placeBet(input: PlaceBetInput): Promise<PlaceBetResult>;
   /** Credits the payout only if the bet is still ACTIVE; returns null otherwise. */
-  cashOut(input: CashOutInput): Promise<BetWithBalance | null>;
+  cashOut(input: CashOutInput): Promise<PaidBet | null>;
   /**
    * A player's cashout as one transaction: finds and locks their bet in the round and pays it if it is
    * ACTIVE and `price` returns a price. A single bounded transaction always ends before settlement starts.
@@ -56,6 +65,7 @@ export interface BetsStore {
     userId: string,
     roundId: string,
     price: (bet: Bet) => CashOutPrice | null,
+    tournamentId: string | null,
   ): Promise<CashOutAttempt>;
   markLost(betId: string): Promise<void>;
   /** Voids the bet and returns its amount, only if it is still ACTIVE; returns null otherwise. */

@@ -6,13 +6,15 @@ import { Round, RoundStateError } from '../game/round';
 import { APP_LOGGER } from '../logging/logger';
 import type { AppLogger } from '../logging/logger';
 import { WideEvent } from '../logging/wide-event';
+import type { TournamentSource } from '../tournaments/tournament';
+import { TournamentsService } from '../tournaments/tournaments.service';
 import { User } from '../users/user';
 import { Bet } from './bet';
 import { effectiveTarget, parseAutoCashout, parseBetAmount, payoutFor } from './bet-rules';
 import { BettingError } from './betting.errors';
 import { BettingMetrics } from './betting.metrics';
 import { BETS_STORE } from './bets.store';
-import type { BetsStore, BetWithBalance } from './bets.store';
+import type { BetsStore, BetWithBalance, PaidBet } from './bets.store';
 
 export interface GameSource {
   readonly currentRound: Round | null;
@@ -56,6 +58,7 @@ export class BettingService implements OnModuleInit {
     @Inject(GameLoopService) private readonly game: GameSource,
     @Inject(APP_LOGGER) private readonly logger: AppLogger,
     private readonly metrics: BettingMetrics,
+    @Inject(TournamentsService) private readonly tournaments: TournamentSource,
   ) {
     this.metrics.trackInFlight(() => this.inFlight.size);
   }
@@ -155,18 +158,23 @@ export class BettingService implements OnModuleInit {
 
     // Read before any await: the multiplier is the one at receipt time.
     const multiplier = this.cashoutMultiplier(round, receivedAt);
-    const attempt = await this.store.cashOutUserBet(user.id, round.id, bet => {
-      if (multiplier === null) {
-        return null;
-      }
-      const paid = Math.min(multiplier, effectiveTarget(bet.amount, bet.autoCashout));
-      return { multiplier: paid, payout: payoutFor(bet.amount, paid) };
-    });
+    const attempt = await this.store.cashOutUserBet(
+      user.id,
+      round.id,
+      bet => {
+        if (multiplier === null) {
+          return null;
+        }
+        const paid = Math.min(multiplier, effectiveTarget(bet.amount, bet.autoCashout));
+        return { multiplier: paid, payout: payoutFor(bet.amount, paid) };
+      },
+      this.tournaments.activeTournamentId,
+    );
 
     switch (attempt.status) {
       case 'paid':
         this.tracked.get(attempt.bet.roundId)?.delete(attempt.bet.id);
-        this.emit({ type: 'cashed_out', bet: attempt.bet, balance: attempt.balance });
+        this.announcePayment(attempt);
         return { bet: attempt.bet, balance: attempt.balance, replayed: false };
       case 'already_paid':
         // A repeated cashout, or an auto-cashout that came first: answer with that result.
@@ -319,19 +327,27 @@ export class BettingService implements OnModuleInit {
     bets.forEach(bet => this.trackAutoCashout(bet));
   }
 
-  private async settleAsWin(bet: Bet, multiplier: number): Promise<BetWithBalance | null> {
+  private async settleAsWin(bet: Bet, multiplier: number): Promise<PaidBet | null> {
     const result = await this.store.cashOut({
       betId: bet.id,
       multiplier,
       payout: payoutFor(bet.amount, multiplier),
+      tournamentId: this.tournaments.activeTournamentId,
     });
 
     if (result) {
       this.tracked.get(bet.roundId)?.delete(bet.id);
-      this.emit({ type: 'cashed_out', ...result });
+      this.announcePayment(result);
     }
 
     return result;
+  }
+
+  private announcePayment({ bet, balance, score }: PaidBet): void {
+    this.emit({ type: 'cashed_out', bet, balance });
+    if (score) {
+      this.tournaments.recordScore(score);
+    }
   }
 
   private trackAutoCashout(bet: Bet): void {

@@ -2,6 +2,7 @@ import { useGameSocket } from '../use-game-socket';
 import { BetPanel } from './bet-panel';
 import { BetsList } from './bets-list';
 import { CrashHistory } from './crash-history';
+import { Leaderboard } from './leaderboard';
 import { RoundDisplay } from './round-display';
 
 interface GameScreenProps {
@@ -10,7 +11,7 @@ interface GameScreenProps {
 }
 
 export function GameScreen({ token, onLogout }: GameScreenProps) {
-  const { state, send } = useGameSocket(token, onLogout);
+  const { state, send, requestRank } = useGameSocket(token, onLogout);
 
   return (
     <main className="game">
@@ -27,6 +28,7 @@ export function GameScreen({ token, onLogout }: GameScreenProps) {
       {state.lastError && <p className="error">{state.lastError}</p>}
       <BetPanel round={state.round} myBet={state.myBet} send={send} />
       <BetsList bets={state.bets} />
+      <Leaderboard tournament={state.tournament} myRank={state.myRank} onRefresh={requestRank} />
     </main>
   );
 }

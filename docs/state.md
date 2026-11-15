@@ -1,7 +1,7 @@
 # Development state
 
 **Current phase:** 4 — Load generator and test dashboard (implemented, first runs done)
-**Last updated:** 2026-10-26
+**Last updated:** 2026-11-10
 
 ## Done
 
@@ -69,6 +69,14 @@
   - first live run by the owner: the `spike` preset failed bets with `internal_error` because the 10-connection database pool timed out after 1 s; money stayed safe (failed bets roll back). Next: a configurable pool size to measure where the pool stops being the limit
 
 - Performance testing ([plan](experiments/performance-test-plan.md)), run by the owner step by step: SLOs, environment and run protocol recorded (step 0, 2026-10-15); generator runs built without ts-node; step 1 done 2026-10-23: the chain works, one generator is honest up to ~4000 bots, the server meets the tick objective at 6000 (an earlier run disagreed, a quiet repeat is pending); server SLOs on the dashboard; step 2 done 2026-10-25: baseline recorded (~3.3 requests/s, p99 ~50 ms, CPU 3–6%), reconciliation is the largest database consumer at this load; slow consumer check 2026-10-26: frozen bots exhaust the laptop's kernel network memory and get reset (code 1006) before the server queues anything; step 3 (fan-out) in progress: a broadcast costs ~5.6 µs per socket, ~15 KB per connection, the first tick of a round no longer waits for the start broadcast (fixed). Next: decide what the tick objective measures, then finish step 3
+
+- Tournaments (ADR-0009), implemented by Claude on request (TDD, subagents), awaiting owner review and a first live run:
+  - `tournaments` and `tournament_entries` entities (one active tournament enforced by a generated `active` column and a partial unique index); points inserted in the cashout transaction (`payIn`) for bets of at least 100, under `FOR SHARE` on the active tournament
+  - Redis leaderboard (ioredis, Lua): score = total points in hundredths, member = inverted reachedAt + user id for "first wins" ties, writes only raise a total; rebuilt from PostgreSQL on start, on Redis ready and every minute
+  - `TournamentsService` (flag in memory, top 100 every 2 s, final standings from PostgreSQL after stop), `GET`/`PUT /tournaments/active`, gateway messages `tournament:leaderboard` and `tournament:rank` (push after own cashout, on request)
+  - web: leaderboard on the game screen, switch in the lab
+  - unit tests: game-server 503/503, load-generator 151/151, web 77/77; format, lint, typecheck clean
+  - Owner next: generate the migration (`npm run migration:generate -w game-server -- src/database/migrations/tournaments`, then again: must be empty, check the generated `active` column), `npm run verify` (new integration tests in `test/tournaments.e2e-spec.ts` and `test/stores.e2e-spec.ts` never ran), then a manual run with Redis stopped and restarted
 
 ## Backlog (before experiments)
 

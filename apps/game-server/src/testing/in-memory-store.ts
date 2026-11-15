@@ -9,12 +9,14 @@ import {
   CashOutAttempt,
   CashOutInput,
   CashOutPrice,
+  PaidBet,
   PlaceBetInput,
   PlaceBetResult,
   UnsettledBet,
 } from '../betting/bets.store';
 import { RoundPlan } from '../game/game-loop';
 import { RoundsStore } from '../game/rounds.store';
+import { TOURNAMENT_MIN_BET, TournamentScore } from '../tournaments/tournament';
 import { User } from '../users/user';
 import { UsersStore } from '../users/users.store';
 
@@ -24,6 +26,14 @@ interface StoredRound {
   bettingEndsAt: number;
   startedAt: number | null;
   crashedAt: number | null;
+}
+
+interface StoredTournamentEntry {
+  tournamentId: string;
+  betId: string;
+  userId: string;
+  points: number;
+  createdAt: number;
 }
 
 /**
@@ -39,6 +49,9 @@ export class InMemoryStore implements UsersStore, BetsStore, RoundsStore {
     amount: string;
     type: 'INITIAL' | 'BET' | 'WIN' | 'REFUND';
   }[] = [];
+  /** Tournaments by id; `endedAt` is null while one runs. */
+  readonly tournaments = new Map<string, { endedAt: number | null }>();
+  readonly tournamentEntries: StoredTournamentEntry[] = [];
   private readonly idempotencyKeys = new Map<string, string>();
 
   /** `now` plays the database clock that decides whether a bet commits before betting ends. */
@@ -109,7 +122,7 @@ export class InMemoryStore implements UsersStore, BetsStore, RoundsStore {
     return Promise.resolve({ status: 'placed', bet: { ...bet }, balance: user.balance });
   }
 
-  cashOut(input: CashOutInput): Promise<BetWithBalance | null> {
+  cashOut(input: CashOutInput): Promise<PaidBet | null> {
     const bet = this.bets.get(input.betId);
     if (!bet || bet.status !== 'ACTIVE') {
       return Promise.resolve(null);
@@ -121,14 +134,16 @@ export class InMemoryStore implements UsersStore, BetsStore, RoundsStore {
     const user = this.mustGetUser(bet.userId);
     user.balance = new Decimal(user.balance).plus(input.payout).toFixed();
     this.ledger.push({ userId: user.id, amount: input.payout, type: 'WIN' });
+    const score = this.awardPoints(bet, input);
 
-    return Promise.resolve({ bet: { ...bet }, balance: user.balance });
+    return Promise.resolve({ bet: { ...bet }, balance: user.balance, score });
   }
 
   async cashOutUserBet(
     userId: string,
     roundId: string,
     price: (bet: Bet) => CashOutPrice | null,
+    tournamentId: string | null,
   ): Promise<CashOutAttempt> {
     const bet = [...this.bets.values()].find(
       candidate => candidate.userId === userId && candidate.roundId === roundId,
@@ -142,7 +157,7 @@ export class InMemoryStore implements UsersStore, BetsStore, RoundsStore {
     }
 
     const offer = bet.status === 'ACTIVE' ? price({ ...bet }) : null;
-    const paid = offer ? await this.cashOut({ betId: bet.id, ...offer }) : null;
+    const paid = offer ? await this.cashOut({ betId: bet.id, ...offer, tournamentId }) : null;
 
     return paid ? { status: 'paid', ...paid } : { status: 'not_paid', bet: { ...bet } };
   }
@@ -246,6 +261,35 @@ export class InMemoryStore implements UsersStore, BetsStore, RoundsStore {
         ? { id: latest.id, crashPoint: latest.crashPoint, bettingEndsAt: latest.bettingEndsAt }
         : null,
     );
+  }
+
+  private awardPoints(bet: Bet, input: CashOutInput): TournamentScore | null {
+    if (input.tournamentId === null || new Decimal(bet.amount).lessThan(TOURNAMENT_MIN_BET)) {
+      return null;
+    }
+    if (this.tournaments.get(input.tournamentId)?.endedAt !== null) {
+      return null;
+    }
+
+    const { tournamentId } = input;
+    this.tournamentEntries.push({
+      tournamentId,
+      betId: bet.id,
+      userId: bet.userId,
+      points: input.multiplier,
+      createdAt: this.now(),
+    });
+    const entries = this.tournamentEntries.filter(
+      entry => entry.tournamentId === tournamentId && entry.userId === bet.userId,
+    );
+
+    return {
+      tournamentId,
+      userId: bet.userId,
+      username: this.mustGetUser(bet.userId).username,
+      points: entries.reduce((sum, entry) => sum + entry.points, 0),
+      reachedAt: Math.max(...entries.map(entry => entry.createdAt)),
+    };
   }
 
   private mustGetUser(id: string): User {

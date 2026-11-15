@@ -13,11 +13,47 @@ import { Round } from '../game/round';
 import { Metrics } from '../metrics/metrics';
 import { InMemoryStore } from '../testing/in-memory-store';
 import { createTestLogger } from '../testing/test-logger';
+import { Leaderboard, PlayerStanding, TournamentEvent } from '../tournaments/tournament';
 import { AuthService } from '../users/auth.service';
-import { GameGateway, GatewayGame } from './game.gateway';
+import { GameGateway, GatewayGame, GatewayTournaments } from './game.gateway';
 import { GatewayMetrics } from './gateway.metrics';
 
 const STARTED_AT = 1_000_000;
+
+const LEADERBOARD: Leaderboard = {
+  tournament: { id: 'tournament-1', startedAt: new Date(STARTED_AT), endedAt: null },
+  available: true,
+  top: [
+    { rank: 1, username: 'bob', points: 350 },
+    { rank: 2, username: 'alice', points: 120 },
+  ],
+};
+
+const STANDING: PlayerStanding = {
+  tournamentId: 'tournament-1',
+  available: true,
+  rank: 2,
+  points: 120,
+};
+
+/** A tournaments source the test drives by hand. */
+class FakeTournaments implements GatewayTournaments {
+  leaderboard: Leaderboard | null = null;
+  readonly rankOf = jest.fn((_userId: string) => Promise.resolve(STANDING));
+  private readonly listeners: ((event: TournamentEvent) => void)[] = [];
+
+  subscribe(listener: (event: TournamentEvent) => void): void {
+    this.listeners.push(listener);
+  }
+
+  currentLeaderboard(): Leaderboard | null {
+    return this.leaderboard;
+  }
+
+  emit(event: TournamentEvent): void {
+    this.listeners.forEach(listener => listener(event));
+  }
+}
 
 class FakeSocket extends EventEmitter {
   readyState: number = WebSocket.OPEN;
@@ -96,8 +132,19 @@ function setup(crashPoint = 500) {
   };
   const { logger, events: logged } = createTestLogger();
   const metrics = new Metrics();
-  const betting = new BettingService(store, game, logger, new BettingMetrics(metrics));
-  const gateway = new GameGateway(auth, betting, game, logger, new GatewayMetrics(metrics));
+  const betting = new BettingService(store, game, logger, new BettingMetrics(metrics), {
+    activeTournamentId: null,
+    recordScore: () => undefined,
+  });
+  const tournaments = new FakeTournaments();
+  const gateway = new GameGateway(
+    auth,
+    betting,
+    game,
+    tournaments,
+    logger,
+    new GatewayMetrics(metrics),
+  );
   betting.onModuleInit();
   gateway.onModuleInit();
 
@@ -134,6 +181,7 @@ function setup(crashPoint = 500) {
     gateway,
     auth,
     betting,
+    tournaments,
     logged,
     registry: metrics.registry,
     emitGameEvent,
@@ -672,6 +720,233 @@ describe('GameGateway', () => {
     });
   });
 
+  describe('tournaments', () => {
+    const leaderboardMessage = {
+      type: 'tournament:leaderboard',
+      tournament: { id: 'tournament-1', startedAt: STARTED_AT, endedAt: null },
+      available: true,
+      top: LEADERBOARD.top,
+    };
+
+    it('sends exactly what it sent before tournaments when none was ever run', async () => {
+      const { connect, emitGameEvent } = setup();
+      const socket = await connect('alice');
+
+      socket.receive({ type: 'bet', requestId: 'r1', amount: '100' });
+      await flush();
+      emitGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 123 });
+
+      expect(socket.sent.map(message => message.type)).toEqual([
+        'snapshot',
+        'bet:placed',
+        'bet:accepted',
+        'round:tick',
+      ]);
+    });
+
+    it('sends the current leaderboard right after the snapshot', async () => {
+      const { connect, tournaments } = setup();
+      tournaments.leaderboard = LEADERBOARD;
+
+      const socket = await connect('alice');
+
+      expect(socket.sent.map(message => message.type)).toEqual([
+        'snapshot',
+        'tournament:leaderboard',
+      ]);
+      expect(socket.last()).toEqual(leaderboardMessage);
+    });
+
+    it('sends the final standings of a finished tournament with its end time', async () => {
+      const { connect, tournaments } = setup();
+      tournaments.leaderboard = {
+        ...LEADERBOARD,
+        tournament: { ...LEADERBOARD.tournament, endedAt: new Date(STARTED_AT + 60_000) },
+      };
+
+      const socket = await connect('alice');
+
+      expect(socket.last()).toEqual({
+        ...leaderboardMessage,
+        tournament: { id: 'tournament-1', startedAt: STARTED_AT, endedAt: STARTED_AT + 60_000 },
+      });
+    });
+
+    it('broadcasts a leaderboard to every authenticated socket', async () => {
+      const { connect, tournaments } = setup();
+      const alice = await connect('alice');
+      const bob = await connect('bob');
+
+      tournaments.emit({ type: 'leaderboard', leaderboard: LEADERBOARD });
+
+      expect(alice.last()).toEqual(leaderboardMessage);
+      expect(bob.last()).toEqual(leaderboardMessage);
+    });
+
+    it('marks an unavailable leaderboard', async () => {
+      const { connect, tournaments } = setup();
+      const socket = await connect('alice');
+
+      tournaments.emit({
+        type: 'leaderboard',
+        leaderboard: { ...LEADERBOARD, available: false, top: [] },
+      });
+
+      expect(socket.last()).toEqual({ ...leaderboardMessage, available: false, top: [] });
+    });
+
+    it('does not broadcast a leaderboard to sockets that are not authenticated', () => {
+      const { gateway, tournaments } = setup();
+      const pending = new FakeSocket();
+      gateway.handleConnection(
+        pending as unknown as WebSocket,
+        {
+          url: '/ws?token=never-checked-yet',
+        } as IncomingMessage,
+      );
+
+      tournaments.emit({ type: 'leaderboard', leaderboard: LEADERBOARD });
+
+      expect(pending.sent).toEqual([]);
+    });
+
+    it('sends a rank update only to the sockets of its player', async () => {
+      const { connect, tournaments, userIdOf } = setup();
+      const alice = await connect('alice');
+      const aliceAgain = await connect('alice');
+      const bob = await connect('bob');
+
+      tournaments.emit({ type: 'rank', userId: userIdOf('alice'), standing: STANDING });
+
+      const rank = {
+        type: 'tournament:rank',
+        tournamentId: 'tournament-1',
+        available: true,
+        rank: 2,
+        points: 120,
+      };
+      expect(alice.last()).toEqual(rank);
+      expect(aliceAgain.last()).toEqual(rank);
+      expect(bob.sent).not.toContainEqual(expect.objectContaining({ type: 'tournament:rank' }));
+    });
+
+    it('answers a rank request with the standing of the player who asked', async () => {
+      const { connect, tournaments, userIdOf } = setup();
+      const socket = await connect('alice');
+
+      socket.receive({ type: 'tournament:rank', requestId: 'r1' });
+      await flush();
+
+      expect(tournaments.rankOf).toHaveBeenCalledWith(userIdOf('alice'));
+      expect(socket.last()).toEqual({
+        type: 'tournament:rank',
+        requestId: 'r1',
+        tournamentId: 'tournament-1',
+        available: true,
+        rank: 2,
+        points: 120,
+      });
+    });
+
+    it('answers a rank request with no tournament ever run', async () => {
+      const { connect, tournaments } = setup();
+      tournaments.rankOf.mockResolvedValueOnce({
+        tournamentId: null,
+        available: true,
+        rank: null,
+        points: 0,
+      });
+      const socket = await connect('alice');
+
+      socket.receive({ type: 'tournament:rank', requestId: 'r1' });
+      await flush();
+
+      expect(socket.last()).toEqual({
+        type: 'tournament:rank',
+        requestId: 'r1',
+        tournamentId: null,
+        available: true,
+        rank: null,
+        points: 0,
+      });
+    });
+
+    it.each([[{ type: 'tournament:rank' }], [{ type: 'tournament:rank', requestId: '' }]])(
+      'answers %p with invalid_message',
+      async message => {
+        const { connect, tournaments } = setup();
+        const socket = await connect();
+
+        socket.receive(message);
+        await flush();
+
+        expect(socket.last()).toEqual({ type: 'error', code: 'invalid_message' });
+        expect(tournaments.rankOf).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejects a rank request sent before the snapshot', async () => {
+      const { gateway, store, tournaments } = setup();
+      await store.findOrCreate('alice', '5000', 'token-alice');
+      const socket = new FakeSocket();
+      gateway.handleConnection(
+        socket as unknown as WebSocket,
+        {
+          url: '/ws?token=token-alice',
+        } as IncomingMessage,
+      );
+
+      socket.receive({ type: 'tournament:rank', requestId: 'r1' });
+      await flush();
+
+      expect(socket.sent[0]).toEqual({ type: 'error', requestId: 'r1', code: 'unauthorized' });
+      expect(tournaments.rankOf).not.toHaveBeenCalled();
+    });
+
+    it('answers a rank request with unavailable while shutting down', async () => {
+      const { connect, gateway, tournaments } = setup();
+      const socket = await connect();
+      const shuttingDown = gateway.beforeApplicationShutdown();
+
+      socket.receive({ type: 'tournament:rank', requestId: 'r1' });
+      await shuttingDown;
+
+      expect(socket.sent).toContainEqual({ type: 'error', requestId: 'r1', code: 'unavailable' });
+      expect(tournaments.rankOf).not.toHaveBeenCalled();
+    });
+
+    it('answers a failed rank lookup with internal_error', async () => {
+      const { connect, tournaments } = setup();
+      tournaments.rankOf.mockRejectedValueOnce(new Error('database down'));
+      const socket = await connect();
+
+      socket.receive({ type: 'tournament:rank', requestId: 'r1' });
+      await flush();
+
+      expect(socket.last()).toEqual({ type: 'error', requestId: 'r1', code: 'internal_error' });
+    });
+
+    it('logs a rank request with the standing it answered', async () => {
+      const { connect, logged, userIdOf } = setup();
+      const socket = await connect('alice');
+
+      socket.receive({ type: 'tournament:rank', requestId: 'r1' });
+      await flush();
+
+      expect(logged('ws.message')).toEqual([
+        expect.objectContaining({
+          level: 'info',
+          clientRequestId: 'r1',
+          userId: userIdOf('alice'),
+          type: 'tournament:rank',
+          tournamentId: 'tournament-1',
+          rank: 2,
+          outcome: 'accepted',
+        }),
+      ]);
+    });
+  });
+
   describe('shutdown', () => {
     it('stops the game loop before waiting for money operations', async () => {
       const { gateway, game, betting } = setup();
@@ -903,6 +1178,14 @@ describe('GameGateway', () => {
           { type: 'invalid', result: 'invalid_message' },
         ],
         [
+          'a rank request',
+          async (_, socket) => {
+            socket.receive({ type: 'tournament:rank', requestId: 'r1' });
+            await flush();
+          },
+          { type: 'tournament:rank', result: 'accepted' },
+        ],
+        [
           'an unexpected failure',
           async ({ betting }, socket) => {
             jest.spyOn(betting, 'placeBet').mockRejectedValueOnce(new Error('boom'));
@@ -1032,6 +1315,19 @@ describe('GameGateway', () => {
         ).toBe(2);
         expect(
           await sample(registry, 'crash_broadcast_duration_seconds_count', { type: 'bet:placed' }),
+        ).toBe(1);
+      });
+
+      it('observes a leaderboard broadcast under its message type', async () => {
+        const { connect, tournaments, registry } = setup();
+        await connect('alice');
+
+        tournaments.emit({ type: 'leaderboard', leaderboard: LEADERBOARD });
+
+        expect(
+          await sample(registry, 'crash_broadcast_duration_seconds_count', {
+            type: 'tournament:leaderboard',
+          }),
         ).toBe(1);
       });
 

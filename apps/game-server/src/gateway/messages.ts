@@ -1,14 +1,21 @@
-import type { BetView, ServerMessage } from '@crash/contracts';
+import type {
+  BetView,
+  ServerMessage,
+  TournamentLeaderboardMessage,
+  TournamentRankMessage,
+} from '@crash/contracts';
 import type { RawData } from 'ws';
 
 import { Bet } from '../betting/bet';
 import { GameEvent } from '../game/game-loop';
+import { Leaderboard, PlayerStanding } from '../tournaments/tournament';
 
 const MAX_REQUEST_ID_LENGTH = 64;
 
 export type ParsedClientMessage =
   | { type: 'bet'; requestId: string; amount: unknown; autoCashout: unknown }
-  | { type: 'cashout'; requestId: string };
+  | { type: 'cashout'; requestId: string }
+  | { type: 'tournament:rank'; requestId: string };
 
 export type ParseResult =
   { ok: true; message: ParsedClientMessage } | { ok: false; requestId?: string };
@@ -48,6 +55,8 @@ export function parseClientMessage(data: RawData): ParseResult {
       };
     case 'cashout':
       return { ok: true, message: { type: 'cashout', requestId } };
+    case 'tournament:rank':
+      return { ok: true, message: { type: 'tournament:rank', requestId } };
     default:
       return { ok: false, requestId };
   }
@@ -83,6 +92,31 @@ export function toRoundMessage(event: GameEvent): ServerMessage {
         crashedAt: event.crashedAt,
       };
   }
+}
+
+export function toLeaderboardMessage(leaderboard: Leaderboard): TournamentLeaderboardMessage {
+  const { tournament } = leaderboard;
+  return {
+    type: 'tournament:leaderboard',
+    tournament: {
+      id: tournament.id,
+      startedAt: tournament.startedAt.getTime(),
+      endedAt: tournament.endedAt ? tournament.endedAt.getTime() : null,
+    },
+    available: leaderboard.available,
+    top: leaderboard.top,
+  };
+}
+
+export function toRankMessage(standing: PlayerStanding, requestId?: string): TournamentRankMessage {
+  return {
+    type: 'tournament:rank',
+    ...(requestId ? { requestId } : {}),
+    tournamentId: standing.tournamentId,
+    available: standing.available,
+    rank: standing.rank,
+    points: standing.points,
+  };
 }
 
 function rawToString(data: RawData): string {

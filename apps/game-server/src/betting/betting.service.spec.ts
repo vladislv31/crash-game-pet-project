@@ -6,6 +6,7 @@ import { Round } from '../game/round';
 import { Metrics } from '../metrics/metrics';
 import { InMemoryStore } from '../testing/in-memory-store';
 import { createTestLogger } from '../testing/test-logger';
+import { TournamentScore, TournamentSource } from '../tournaments/tournament';
 import { User } from '../users/user';
 import { BettingError } from './betting.errors';
 import { BettingMetrics } from './betting.metrics';
@@ -48,7 +49,17 @@ async function setup(crashPoint = 500) {
   const { logger, events: logged } = createTestLogger();
   const metrics = new Metrics();
   const bettingMetrics = new BettingMetrics(metrics);
-  const service = new BettingService(store, game, logger, bettingMetrics);
+  const recordedScores: TournamentScore[] = [];
+  const tournaments: {
+    activeTournamentId: string | null;
+    recordScore: TournamentSource['recordScore'];
+  } = {
+    activeTournamentId: null,
+    recordScore: score => {
+      recordedScores.push(score);
+    },
+  };
+  const service = new BettingService(store, game, logger, bettingMetrics, tournaments);
   const events: BettingEvent[] = [];
   service.subscribe(event => events.push(event));
   const user = await store.findOrCreate('alice', '5000', 'token-alice');
@@ -73,6 +84,16 @@ async function setup(crashPoint = 500) {
     databaseTime = time;
   }
 
+  function startTournament(id = 'tournament-1') {
+    store.tournaments.set(id, { endedAt: null });
+    tournaments.activeTournamentId = id;
+  }
+
+  /** Ends the tournament in the database only, as when a stop commits while a cashout is on its way. */
+  function endTournamentInDatabase(id = 'tournament-1') {
+    store.tournaments.set(id, { endedAt: databaseTime });
+  }
+
   return {
     store,
     game,
@@ -86,6 +107,10 @@ async function setup(crashPoint = 500) {
     round,
     placeBet,
     setDatabaseTime,
+    tournaments,
+    recordedScores,
+    startTournament,
+    endTournamentInDatabase,
   };
 }
 
@@ -671,7 +696,7 @@ describe('BettingService', () => {
 
   describe('after a restart', () => {
     it('pays auto-cashouts of a continued round from the bets in the store', async () => {
-      const { store, user, game, logger, bettingMetrics } = await setup(500);
+      const { store, user, game, logger, bettingMetrics, tournaments } = await setup(500);
       const placed = await store.placeBet({
         userId: user.id,
         username: user.username,
@@ -680,7 +705,7 @@ describe('BettingService', () => {
         autoCashout: 150,
         idempotencyKey: 'before-restart',
       });
-      const restarted = new BettingService(store, game, logger, bettingMetrics);
+      const restarted = new BettingService(store, game, logger, bettingMetrics, tournaments);
 
       await restarted.handleGameEvent({
         type: 'started',
@@ -694,13 +719,14 @@ describe('BettingService', () => {
     });
 
     it('logs a failure to reload the bets of a continued round', async () => {
-      const { store, game, logger, logged, bettingMetrics } = await setup(500);
+      const { store, game, logger, logged, bettingMetrics, tournaments } = await setup(500);
       let notify = (_event: GameEvent) => undefined as void;
       const restarted = new BettingService(
         store,
         { ...game, subscribe: listener => (notify = listener) },
         logger,
         bettingMetrics,
+        tournaments,
       );
       restarted.onModuleInit();
       jest.spyOn(store, 'findActiveBets').mockRejectedValueOnce(new Error('database down'));
@@ -904,10 +930,10 @@ describe('BettingService', () => {
     });
 
     it('settles bets left over from before a restart', async () => {
-      const { store, user, game, logger, bettingMetrics } = await setup(200);
+      const { store, user, game, logger, bettingMetrics, tournaments } = await setup(200);
       const bet = await writeBet(store, user, 150);
       await store.markCrashed('round-1', at(200));
-      const restarted = new BettingService(store, game, logger, bettingMetrics);
+      const restarted = new BettingService(store, game, logger, bettingMetrics, tournaments);
 
       await openRound(restarted, 'round-2');
 
@@ -1198,6 +1224,187 @@ describe('BettingService', () => {
 
         expect(await sample(registry, 'crash_unsettled_bets')).toBe(1);
       });
+    });
+  });
+
+  describe('tournament points', () => {
+    /** A bet written straight to the store, so it can be below the minimum bet or left untracked. */
+    async function writeBet(store: InMemoryStore, user: User, amount: string, autoCashout: number) {
+      const placed = await store.placeBet({
+        userId: user.id,
+        username: user.username,
+        roundId: 'round-1',
+        amount,
+        autoCashout,
+        idempotencyKey: `direct-${user.id}`,
+      });
+      if (placed.status !== 'placed') {
+        throw new Error('Bet setup failed');
+      }
+      return placed.bet;
+    }
+
+    it('awards the multiplier as points for a manual cashout during a tournament', async () => {
+      const { placeBet, service, round, user, store, startTournament } = await setup(500);
+      startTournament();
+      const { bet } = await placeBet('100');
+      round().start(STARTED_AT);
+
+      await service.cashOut(user, at(120));
+
+      expect(store.tournamentEntries).toEqual([
+        {
+          tournamentId: 'tournament-1',
+          betId: bet.id,
+          userId: user.id,
+          points: 120,
+          createdAt: STARTED_AT - 1_000,
+        },
+      ]);
+    });
+
+    it('records the player total after a manual cashout that earned points', async () => {
+      const { placeBet, service, round, user, startTournament, recordedScores } = await setup(500);
+      startTournament();
+      await placeBet('100');
+      round().start(STARTED_AT);
+
+      await service.cashOut(user, at(120));
+
+      expect(recordedScores).toEqual([
+        {
+          tournamentId: 'tournament-1',
+          userId: user.id,
+          username: 'alice',
+          points: 120,
+          reachedAt: STARTED_AT - 1_000,
+        },
+      ]);
+    });
+
+    it('awards points for a bet placed before the tournament started', async () => {
+      const { placeBet, service, round, user, startTournament, recordedScores } = await setup(500);
+      await placeBet('100');
+      round().start(STARTED_AT);
+      startTournament();
+
+      await service.cashOut(user, at(120));
+
+      expect(recordedScores).toMatchObject([{ points: 120 }]);
+    });
+
+    it('awards points for an auto-cashout on a tick', async () => {
+      const { placeBet, service, round, startTournament, recordedScores } = await setup(500);
+      startTournament();
+      await placeBet('100', 150);
+      round().start(STARTED_AT);
+
+      await service.handleGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 153 });
+
+      expect(recordedScores).toMatchObject([{ tournamentId: 'tournament-1', points: 150 }]);
+    });
+
+    it('awards points for a win paid by the settlement sweep', async () => {
+      const { service, store, user, startTournament, recordedScores } = await setup(200);
+      startTournament();
+      await writeBet(store, user, '100', 150);
+      await store.markCrashed('round-1', at(200));
+
+      await service.handleGameEvent({ type: 'betting', roundId: 'round-2', endsAt: 0 });
+
+      expect(recordedScores).toMatchObject([{ tournamentId: 'tournament-1', points: 150 }]);
+    });
+
+    it('awards no points for a bet just below the minimum', async () => {
+      const { service, round, store, user, startTournament, recordedScores } = await setup(500);
+      startTournament();
+      await writeBet(store, user, '99.999999999999999999', 400);
+      round().start(STARTED_AT);
+
+      const result = await service.cashOut(user, at(120));
+
+      expect(result.bet.status).toBe('CASHED_OUT');
+      expect(store.tournamentEntries).toEqual([]);
+      expect(recordedScores).toEqual([]);
+    });
+
+    it('awards no points without a running tournament', async () => {
+      const { placeBet, service, round, user, store, recordedScores } = await setup(500);
+      await placeBet('100');
+      round().start(STARTED_AT);
+
+      const result = await service.cashOut(user, at(120));
+
+      expect(result.balance).toBe('5020');
+      expect(store.tournamentEntries).toEqual([]);
+      expect(recordedScores).toEqual([]);
+    });
+
+    it('pays but awards no points when the tournament ended before the payment', async () => {
+      const {
+        placeBet,
+        service,
+        round,
+        user,
+        store,
+        recordedScores,
+        startTournament,
+        endTournamentInDatabase,
+      } = await setup(500);
+      startTournament();
+      await placeBet('100');
+      round().start(STARTED_AT);
+      endTournamentInDatabase();
+
+      const result = await service.cashOut(user, at(120));
+
+      expect(result.balance).toBe('5020');
+      expect(store.tournamentEntries).toEqual([]);
+      expect(recordedScores).toEqual([]);
+    });
+
+    it('awards points only once when a cashout is repeated', async () => {
+      const { placeBet, service, round, user, store, startTournament, recordedScores } =
+        await setup(500);
+      startTournament();
+      await placeBet('100');
+      round().start(STARTED_AT);
+
+      await service.cashOut(user, at(120));
+      await service.cashOut(user, at(180));
+
+      expect(store.tournamentEntries).toHaveLength(1);
+      expect(recordedScores).toHaveLength(1);
+    });
+
+    it('records the running total of the player across rounds', async () => {
+      const { placeBet, service, round, user, store, game, startTournament, recordedScores } =
+        await setup(500);
+      const secondRoundStart = STARTED_AT + 100_000;
+      startTournament();
+      await placeBet('100');
+      round().start(STARTED_AT);
+      await service.cashOut(user, at(120));
+      await store.create({ id: 'round-2', crashPoint: 500, bettingEndsAt: secondRoundStart });
+      game.currentRound = new Round('round-2', 500);
+      await placeBet('100', undefined, 'bet-2');
+      round().start(secondRoundStart);
+
+      await service.cashOut(user, secondRoundStart + crashTimeMs(230));
+
+      expect(recordedScores.map(score => score.points)).toEqual([120, 350]);
+    });
+
+    it('announces a cashout that earned points without the score', async () => {
+      const { placeBet, service, round, user, events, startTournament } = await setup(500);
+      startTournament();
+      await placeBet('100', 150);
+      round().start(STARTED_AT);
+
+      await service.handleGameEvent({ type: 'tick', roundId: 'round-1', multiplier: 150 });
+      const { bet, balance } = await service.cashOut(user, at(180));
+
+      expect(events.at(-1)).toEqual({ type: 'cashed_out', bet, balance });
     });
   });
 });

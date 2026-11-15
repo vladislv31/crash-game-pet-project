@@ -24,6 +24,8 @@ Outcomes of cashout requests (`accepted`, `replayed`, error codes):
 jq -r 'select(.event == "ws.message" and .type == "cashout") | .outcome' apps/game-server/logs/dev.jsonl | sort | uniq -c
 ```
 
+Tournament events ([ADR-0009](adr/0009-tournaments.md)): `tournament_rebuild` (the Redis leaderboard refilled from PostgreSQL: `trigger` init, ready or interval, `players`), `tournament_leaderboard_unavailable` / `tournament_leaderboard_recovered` when Redis reads start failing or work again, `redis.error` for each failed connection attempt while Redis is down (about every 2 s), and `tournament_score_failed`, `tournament_rank_failed`, `tournament_final_leaderboard_failed`, `tournament_subscriber_failed` for single failures.
+
 ## Money reconciliation
 
 The server checks the money invariants every minute ([ADR-0007](adr/0007-reconciliation.md)): balances against the ledger, every bet against its ledger entries, payouts against amount × multiplier, the max win and the crash point. Each run is one `reconciliation` log event (`error` when anything is off) and the metrics behind the **Reconciliation** panels. To get a verdict right away, for example after an experiment:

@@ -11,6 +11,7 @@ import { GatewayModule } from './gateway/gateway.module';
 import { LoggingModule } from './logging/logging.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { ReconciliationModule } from './reconciliation/reconciliation.module';
+import { TournamentsModule } from './tournaments/tournaments.module';
 import { UsersModule } from './users/users.module';
 
 @Module({
@@ -22,6 +23,7 @@ import { UsersModule } from './users/users.module';
     TypeOrmModule.forRootAsync({ useFactory: () => appDatabaseOptions() }),
     GameModule,
     UsersModule,
+    TournamentsModule,
     BettingModule,
     GatewayModule,
     ReconciliationModule,

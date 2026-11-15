@@ -1,4 +1,4 @@
-import type { ClientMessage, ServerMessage } from '@crash/contracts';
+import type { ClientMessage, ServerMessage, TournamentRankRequestMessage } from '@crash/contracts';
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 
 import { GameState, INITIAL_STATE, reduce } from './game-state';
@@ -10,7 +10,7 @@ const RECONNECT_DELAY_MS = 1_000;
 export function useGameSocket(
   token: string,
   onUnauthorized: () => void,
-): { state: GameState; send: (message: ClientMessage) => void } {
+): { state: GameState; send: (message: ClientMessage) => void; requestRank: () => void } {
   const [state, dispatch] = useReducer(reduce, INITIAL_STATE);
   const socketRef = useRef<WebSocket | null>(null);
 
@@ -60,6 +60,18 @@ export function useGameSocket(
     }
   }, []);
 
+  // Not dispatched as a request: it is not retried, and must not replace a pending bet.
+  const requestRank = useCallback(() => {
+    const socket = socketRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      const message: TournamentRankRequestMessage = {
+        type: 'tournament:rank',
+        requestId: crypto.randomUUID(),
+      };
+      socket.send(JSON.stringify(message));
+    }
+  }, []);
+
   // After every (re)connect, resend the bet that got no answer, with the same requestId:
   // the server either finds it already placed or places it now, never twice.
   const pendingRef = useRef(state.pending);
@@ -72,5 +84,12 @@ export function useGameSocket(
     }
   }, [state.snapshots]);
 
-  return { state, send };
+  // The snapshot does not carry the player's tournament place, so ask for it after every (re)connect.
+  useEffect(() => {
+    if (state.snapshots > 0) {
+      requestRank();
+    }
+  }, [state.snapshots, requestRank]);
+
+  return { state, send, requestRank };
 }

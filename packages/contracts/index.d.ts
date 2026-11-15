@@ -48,7 +48,13 @@ export interface CashoutMessage {
   requestId: string;
 }
 
-export type ClientMessage = BetMessage | CashoutMessage;
+/** Asks for the player's place in the current (or last) tournament (ADR-0009). */
+export interface TournamentRankRequestMessage {
+  type: 'tournament:rank';
+  requestId: string;
+}
+
+export type ClientMessage = BetMessage | CashoutMessage | TournamentRankRequestMessage;
 
 export type ErrorCode =
   | 'unauthorized'
@@ -133,6 +139,58 @@ export interface BalanceMessage {
   balance: string;
 }
 
+// Tournaments (ADR-0009). Points are integers in hundredths, like multipliers (350 = 3.50 points).
+
+export interface TournamentView {
+  id: string;
+  startedAt: number;
+  /** Null while the tournament runs. */
+  endedAt: number | null;
+}
+
+export interface LeaderboardEntry {
+  /** 1-based. */
+  rank: number;
+  username: string;
+  points: number;
+}
+
+/** Every 2 s while a tournament runs, once when it starts and stops, and to new connections. */
+export interface TournamentLeaderboardMessage {
+  type: 'tournament:leaderboard';
+  /** The running tournament, or the last finished one. */
+  tournament: TournamentView;
+  /** False while the leaderboard cannot be read (Redis down): the client hides it. */
+  available: boolean;
+  /** Up to 100 entries, best first. */
+  top: LeaderboardEntry[];
+}
+
+/** After the player's own cashout that earned points, and in answer to a `tournament:rank` request. */
+export interface TournamentRankMessage {
+  type: 'tournament:rank';
+  /** Set when answering a request. */
+  requestId?: string;
+  /** Null when no tournament was ever run. */
+  tournamentId: string | null;
+  available: boolean;
+  /** Null when the player has no points in the tournament. */
+  rank: number | null;
+  points: number;
+}
+
+/** `GET /tournaments/active` and the answer to `PUT /tournaments/active`. */
+export interface TournamentStatusResponse {
+  /** The running tournament, or the last finished one; null when none was ever run. */
+  tournament: TournamentView | null;
+  active: boolean;
+}
+
+/** `PUT /tournaments/active`; idempotent. */
+export interface SetTournamentActiveRequest {
+  active: boolean;
+}
+
 export interface ErrorMessage {
   type: 'error';
   requestId?: string;
@@ -152,6 +210,8 @@ export type ServerMessage =
   | BetAcceptedMessage
   | CashoutAcceptedMessage
   | BalanceMessage
+  | TournamentLeaderboardMessage
+  | TournamentRankMessage
   | ErrorMessage;
 
 // Load generator control API (ADR-0008), used by the test dashboard.

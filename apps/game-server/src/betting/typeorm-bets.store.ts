@@ -1,8 +1,10 @@
 import type { BetStatus } from '@crash/contracts';
 import { Injectable } from '@nestjs/common';
+import Decimal from 'decimal.js';
 import { DataSource, EntityManager } from 'typeorm';
 
 import { fromNumeric, updateReturning, violatedUniqueConstraint } from '../database/postgres';
+import { TOURNAMENT_MIN_BET, TournamentScore } from '../tournaments/tournament';
 import { UserEntity } from '../users/user.entity';
 import { Bet } from './bet';
 import { BetEntity } from './bet.entity';
@@ -12,6 +14,7 @@ import {
   CashOutAttempt,
   CashOutInput,
   CashOutPrice,
+  PaidBet,
   PlaceBetInput,
   PlaceBetResult,
   UnsettledBet,
@@ -52,7 +55,7 @@ export class TypeOrmBetsStore implements BetsStore {
     }
   }
 
-  cashOut(input: CashOutInput): Promise<BetWithBalance | null> {
+  cashOut(input: CashOutInput): Promise<PaidBet | null> {
     return this.dataSource.transaction(manager => this.payIn(manager, input));
   }
 
@@ -60,6 +63,7 @@ export class TypeOrmBetsStore implements BetsStore {
     userId: string,
     roundId: string,
     price: (bet: Bet) => CashOutPrice | null,
+    tournamentId: string | null,
   ): Promise<CashOutAttempt> {
     return this.dataSource.transaction(async manager => {
       // The row lock makes concurrent cashouts of the same bet wait here and then see CASHED_OUT.
@@ -78,19 +82,21 @@ export class TypeOrmBetsStore implements BetsStore {
       }
 
       const offer = bet.status === 'ACTIVE' ? price(bet) : null;
-      const paid = offer ? await this.payIn(manager, { betId: bet.id, ...offer }) : null;
+      const paid = offer
+        ? await this.payIn(manager, { betId: bet.id, ...offer, tournamentId })
+        : null;
 
       return paid ? { status: 'paid', ...paid } : { status: 'not_paid', bet };
     });
   }
 
-  private async payIn(manager: EntityManager, input: CashOutInput): Promise<BetWithBalance | null> {
-    const settled = await updateReturning<{ user_id: string }>(
+  private async payIn(manager: EntityManager, input: CashOutInput): Promise<PaidBet | null> {
+    const settled = await updateReturning<{ user_id: string; amount: string }>(
       manager,
       `UPDATE bets
        SET status = 'CASHED_OUT', cashout_multiplier = $2, payout = $3, settled_at = now()
        WHERE id = $1 AND status = 'ACTIVE'
-       RETURNING user_id`,
+       RETURNING user_id, amount::text AS amount`,
       [input.betId, input.multiplier, input.payout],
     );
     const [bet] = settled;
@@ -110,9 +116,62 @@ export class TypeOrmBetsStore implements BetsStore {
       amount: input.payout,
     });
 
+    const score =
+      input.tournamentId !== null &&
+      new Decimal(bet.amount).greaterThanOrEqualTo(TOURNAMENT_MIN_BET)
+        ? await this.awardPoints(
+            manager,
+            input.tournamentId,
+            input.betId,
+            bet.user_id,
+            input.multiplier,
+          )
+        : null;
+
     const updated = await manager.findOneByOrFail(BetEntity, { id: input.betId });
 
-    return { bet: toBet(updated), balance: fromNumeric(mustExist(user).balance) };
+    return { bet: toBet(updated), balance: fromNumeric(mustExist(user).balance), score };
+  }
+
+  /** Returns the player's new total, or null when the tournament has ended (ADR-0009). */
+  private async awardPoints(
+    manager: EntityManager,
+    tournamentId: string,
+    betId: string,
+    userId: string,
+    points: number,
+  ): Promise<TournamentScore | null> {
+    // Stopping updates this row, so it waits for this transaction and no entry lands in a finished tournament.
+    const [active] = await manager.query<{ id: string }[]>(
+      'SELECT id FROM tournaments WHERE id = $1 AND ended_at IS NULL FOR SHARE',
+      [tournamentId],
+    );
+    if (!active) {
+      return null;
+    }
+
+    await manager.query(
+      `INSERT INTO tournament_entries (tournament_id, bet_id, user_id, points)
+       VALUES ($1, $2, $3, $4)`,
+      [tournamentId, betId, userId, points],
+    );
+    const [total] = await manager.query<TournamentTotalRow[]>(
+      `SELECT sum(e.points)::text AS points, max(e.created_at) AS reached_at, u.username
+       FROM tournament_entries e
+       JOIN users u ON u.id = e.user_id
+       WHERE e.tournament_id = $1 AND e.user_id = $2
+       GROUP BY u.username`,
+      [tournamentId, userId],
+    );
+    const { points: totalPoints, reached_at: reachedAt, username } = mustExist(total);
+
+    return {
+      tournamentId,
+      userId,
+      username,
+      points: Number(totalPoints),
+      reachedAt: reachedAt.getTime(),
+    };
   }
 
   async markLost(betId: string): Promise<void> {
@@ -291,6 +350,12 @@ class BettingClosedError extends Error {}
 
 /** Thrown inside the bet transaction to roll back the inserted bet when the balance is too low. */
 class InsufficientFundsError extends Error {}
+
+interface TournamentTotalRow {
+  points: string;
+  reached_at: Date;
+  username: string;
+}
 
 interface UnsettledBetRow {
   id: string;

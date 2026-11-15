@@ -12,10 +12,19 @@ import { GameLoopService } from '../game/game-loop.service';
 import { APP_LOGGER } from '../logging/logger';
 import type { AppLogger } from '../logging/logger';
 import { WideEvent } from '../logging/wide-event';
+import { Leaderboard, PlayerStanding, TournamentEvent } from '../tournaments/tournament';
+import { TournamentsService } from '../tournaments/tournaments.service';
 import { AuthService } from '../users/auth.service';
 import { User } from '../users/user';
 import { GatewayMetrics, RequestType, secondsSince } from './gateway.metrics';
-import { ParsedClientMessage, parseClientMessage, toBetView, toRoundMessage } from './messages';
+import {
+  ParsedClientMessage,
+  parseClientMessage,
+  toBetView,
+  toLeaderboardMessage,
+  toRankMessage,
+  toRoundMessage,
+} from './messages';
 
 const UNAUTHORIZED_CLOSE_CODE = 4401;
 // Standard WebSocket code "service restart": clients reconnect, e.g. to another instance.
@@ -24,6 +33,12 @@ const RESTART_CLOSE_CODE = 1012;
 export interface GatewayGame extends GameSource {
   currentRoundView(): RoundView | null;
   stop(): Promise<void>;
+}
+
+export interface GatewayTournaments {
+  subscribe(listener: (event: TournamentEvent) => void): void;
+  currentLeaderboard(): Leaderboard | null;
+  rankOf(userId: string): Promise<PlayerStanding>;
 }
 
 interface Session {
@@ -59,6 +74,7 @@ export class GameGateway
     private readonly auth: AuthService,
     private readonly betting: BettingService,
     @Inject(GameLoopService) private readonly game: GatewayGame,
+    @Inject(TournamentsService) private readonly tournaments: GatewayTournaments,
     @Inject(APP_LOGGER) private readonly logger: AppLogger,
     private readonly metrics: GatewayMetrics,
   ) {
@@ -68,6 +84,7 @@ export class GameGateway
   onModuleInit(): void {
     this.game.subscribe(event => this.broadcast(toRoundMessage(event)));
     this.betting.subscribe(event => this.handleBettingEvent(event));
+    this.tournaments.subscribe(event => this.handleTournamentEvent(event));
   }
 
   /**
@@ -172,6 +189,10 @@ export class GameGateway
         round,
         bet: bet ? toBetView(bet) : null,
       });
+      const leaderboard = this.tournaments.currentLeaderboard();
+      if (leaderboard) {
+        this.send(client, toLeaderboardMessage(leaderboard));
+      }
     } catch (error) {
       session.log.set({ authOutcome: 'error' });
       session.log.fail(error);
@@ -263,6 +284,12 @@ export class GameGateway
     receivedAt: number,
     log: WideEvent,
   ): Promise<{ response: ServerMessage; outcome: 'accepted' | 'replayed' }> {
+    if (message.type === 'tournament:rank') {
+      const standing = await this.tournaments.rankOf(user.id);
+      log.set({ tournamentId: standing.tournamentId, rank: standing.rank });
+      return { response: toRankMessage(standing, message.requestId), outcome: 'accepted' };
+    }
+
     if (message.type === 'cashout') {
       const { bet, balance, replayed } = await this.betting.cashOut(user, receivedAt);
       log.set({
@@ -320,6 +347,25 @@ export class GameGateway
         this.broadcast({ type: 'bet:refunded', bet });
         this.sendBalance(event.bet.userId, event.balance);
         return;
+    }
+  }
+
+  private handleTournamentEvent(event: TournamentEvent): void {
+    switch (event.type) {
+      case 'leaderboard':
+        this.broadcast(toLeaderboardMessage(event.leaderboard));
+        return;
+      case 'rank':
+        this.sendToUser(event.userId, toRankMessage(event.standing));
+        return;
+    }
+  }
+
+  private sendToUser(userId: string, message: ServerMessage): void {
+    for (const [client, session] of this.sessions) {
+      if (session.user?.id === userId) {
+        this.send(client, message);
+      }
     }
   }
 

@@ -210,3 +210,42 @@ button:disabled {
 .status-offline {
   color: var(--loss);
 }
+
+.leaderboard .my-place {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.leaderboard .label {
+  color: var(--muted);
+}
+
+.leaderboard table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.leaderboard td {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.leaderboard td:last-child {
+  text-align: right;
+}
+
+.lab-tournament {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.lab-tournament h2 {
+  margin: 0;
+}

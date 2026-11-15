@@ -1,4 +1,11 @@
-import type { BetView, ClientMessage, RoundPhase, ServerMessage } from '@crash/contracts';
+import type {
+  BetView,
+  ClientMessage,
+  LeaderboardEntry,
+  RoundPhase,
+  ServerMessage,
+  TournamentView,
+} from '@crash/contracts';
 
 const HISTORY_SIZE = 20;
 
@@ -10,6 +17,21 @@ export interface RoundState {
   /** Last multiplier from the server, in hundredths. */
   multiplier: number;
   crashPoint: number | null;
+}
+
+export interface TournamentState {
+  /** The running tournament, or the last finished one. */
+  tournament: TournamentView;
+  /** False while the server cannot read the leaderboard: it is hidden then. */
+  available: boolean;
+  top: LeaderboardEntry[];
+}
+
+export interface MyRank {
+  tournamentId: string;
+  /** Null when the player has no points in the tournament. */
+  rank: number | null;
+  points: number;
 }
 
 export interface GameState {
@@ -29,6 +51,8 @@ export interface GameState {
   pending: PendingRequest | null;
   /** Increases with every snapshot, i.e. every (re)connect. */
   snapshots: number;
+  tournament: TournamentState | null;
+  myRank: MyRank | null;
 }
 
 export interface PendingRequest {
@@ -54,6 +78,8 @@ export const INITIAL_STATE: GameState = {
   lastError: null,
   pending: null,
   snapshots: 0,
+  tournament: null,
+  myRank: null,
 };
 
 export function reduce(state: GameState, action: GameAction): GameState {
@@ -129,6 +155,28 @@ function applyMessage(state: GameState, message: ServerMessage, localTime: numbe
       };
     case 'balance':
       return { ...state, balance: message.balance };
+    case 'tournament:leaderboard':
+      return {
+        ...state,
+        tournament: {
+          tournament: message.tournament,
+          available: message.available,
+          top: message.top,
+        },
+        myRank: state.myRank?.tournamentId === message.tournament.id ? state.myRank : null,
+      };
+    case 'tournament:rank':
+      if (message.tournamentId === null) {
+        return { ...state, myRank: null };
+      }
+      // Unreadable now (Redis down): the last known place is still the best answer.
+      if (!message.available) {
+        return state;
+      }
+      return {
+        ...state,
+        myRank: { tournamentId: message.tournamentId, rank: message.rank, points: message.points },
+      };
     case 'error': {
       // "unavailable" means the server is restarting: keep the request to retry after reconnecting.
       const forget = message.code !== 'unavailable' && answered(state.pending, message.requestId);

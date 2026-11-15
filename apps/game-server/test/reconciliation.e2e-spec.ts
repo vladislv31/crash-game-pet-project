@@ -33,7 +33,9 @@ describe('Reconciliation (PostgreSQL)', () => {
   });
 
   beforeEach(async () => {
-    await dataSource.query('TRUNCATE ledger_entries, bets, rounds, users');
+    await dataSource.query(
+      'TRUNCATE tournament_entries, tournaments, ledger_entries, bets, rounds, users',
+    );
   });
 
   function createUser(username = 'alice'): Promise<User> {
@@ -77,7 +79,7 @@ describe('Reconciliation (PostgreSQL)', () => {
       const crashed = await openRound(250);
       const won = await placeBet(alice, crashed);
       const lost = await placeBet(bob, crashed, '150.5');
-      await bets.cashOut({ betId: won, multiplier: 198, payout: '198' });
+      await bets.cashOut({ betId: won, multiplier: 198, payout: '198', tournamentId: null });
       await bets.markLost(lost);
       const interrupted = await openRound();
       await bets.refund(await placeBet(alice, interrupted));
@@ -91,7 +93,7 @@ describe('Reconciliation (PostgreSQL)', () => {
     it('accepts a payout with cents', async () => {
       const alice = await createUser();
       const betId = await placeBet(alice, await openRound(), '100.5');
-      await bets.cashOut({ betId, multiplier: 198, payout: '198.99' });
+      await bets.cashOut({ betId, multiplier: 198, payout: '198.99', tournamentId: null });
 
       await expect(mismatchTypes()).resolves.toEqual([]);
     });
@@ -168,7 +170,7 @@ describe('Reconciliation (PostgreSQL)', () => {
     it('reports a cashout paid twice', async () => {
       const alice = await createUser();
       const betId = await placeBet(alice, await openRound());
-      await bets.cashOut({ betId, multiplier: 150, payout: '150' });
+      await bets.cashOut({ betId, multiplier: 150, payout: '150', tournamentId: null });
       await insertEntry(alice.id, betId, 'WIN', '150');
       await dataSource.query('UPDATE users SET balance = balance + 150 WHERE id = $1', [alice.id]);
 
@@ -197,7 +199,7 @@ describe('Reconciliation (PostgreSQL)', () => {
     it('reports a cashed-out bet without its WIN entry', async () => {
       const alice = await createUser();
       const betId = await placeBet(alice, await openRound());
-      await bets.cashOut({ betId, multiplier: 150, payout: '150' });
+      await bets.cashOut({ betId, multiplier: 150, payout: '150', tournamentId: null });
       await dataSource.query("DELETE FROM ledger_entries WHERE bet_id = $1 AND type = 'WIN'", [
         betId,
       ]);
@@ -239,7 +241,7 @@ describe('Reconciliation (PostgreSQL)', () => {
     it('reports a payout that does not match amount × multiplier', async () => {
       const alice = await createUser();
       const betId = await placeBet(alice, await openRound());
-      await bets.cashOut({ betId, multiplier: 150, payout: '151' });
+      await bets.cashOut({ betId, multiplier: 150, payout: '151', tournamentId: null });
 
       const { mismatches } = await check();
 
@@ -251,7 +253,7 @@ describe('Reconciliation (PostgreSQL)', () => {
     it('reports a payout above the max win', async () => {
       const alice = await createUser();
       const betId = await placeBet(alice, await openRound(1_000_000), '1000');
-      await bets.cashOut({ betId, multiplier: 10_001, payout: '100010' });
+      await bets.cashOut({ betId, multiplier: 10_001, payout: '100010', tournamentId: null });
 
       const { mismatches } = await check();
 
@@ -269,7 +271,7 @@ describe('Reconciliation (PostgreSQL)', () => {
     it('accepts a payout of exactly the max win', async () => {
       const alice = await createUser();
       const betId = await placeBet(alice, await openRound(1_000_000), '1000');
-      await bets.cashOut({ betId, multiplier: 10_000, payout: '100000' });
+      await bets.cashOut({ betId, multiplier: 10_000, payout: '100000', tournamentId: null });
 
       await expect(mismatchTypes()).resolves.toEqual([]);
     });
@@ -277,7 +279,7 @@ describe('Reconciliation (PostgreSQL)', () => {
     it('reports a cashout at the crash point', async () => {
       const alice = await createUser();
       const betId = await placeBet(alice, await openRound(250));
-      await bets.cashOut({ betId, multiplier: 250, payout: '250' });
+      await bets.cashOut({ betId, multiplier: 250, payout: '250', tournamentId: null });
 
       const { mismatches } = await check();
 
@@ -295,7 +297,7 @@ describe('Reconciliation (PostgreSQL)', () => {
     it('accepts a cashout just below the crash point', async () => {
       const alice = await createUser();
       const betId = await placeBet(alice, await openRound(250));
-      await bets.cashOut({ betId, multiplier: 249, payout: '249' });
+      await bets.cashOut({ betId, multiplier: 249, payout: '249', tournamentId: null });
 
       await expect(mismatchTypes()).resolves.toEqual([]);
     });

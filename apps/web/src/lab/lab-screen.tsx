@@ -10,6 +10,7 @@ import {
   toForm,
   toScenario,
 } from './scenario-form';
+import { TournamentSwitch } from './tournament-switch';
 
 const GRAFANA_URL = 'http://localhost:3001/d/game-server';
 
@@ -80,6 +81,8 @@ export function LabScreen() {
           Charts in Grafana
         </a>
       </header>
+
+      <TournamentSwitch />
 
       <form className="card lab-form" onSubmit={event => void start(event)}>
         <label>

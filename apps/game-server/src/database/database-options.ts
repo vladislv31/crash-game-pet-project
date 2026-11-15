@@ -5,6 +5,8 @@ import { PostgresConnectionOptions } from 'typeorm/driver/postgres/PostgresConne
 import { BetEntity } from '../betting/bet.entity';
 import { LedgerEntryEntity } from '../betting/ledger-entry.entity';
 import { RoundEntity } from '../game/round.entity';
+import { TournamentEntryEntity } from '../tournaments/tournament-entry.entity';
+import { TournamentEntity } from '../tournaments/tournament.entity';
 import { UserEntity } from '../users/user.entity';
 
 /** Shared by the app and the TypeORM CLI. Defaults match docker-compose.yml. */
@@ -16,7 +18,14 @@ export function databaseOptions(env: NodeJS.ProcessEnv = process.env): PostgresC
     username: env.POSTGRES_USER ?? 'crash',
     password: env.POSTGRES_PASSWORD ?? 'crash',
     database: env.POSTGRES_DB ?? 'crash',
-    entities: [UserEntity, BetEntity, LedgerEntryEntity, RoundEntity],
+    entities: [
+      UserEntity,
+      BetEntity,
+      LedgerEntryEntity,
+      RoundEntity,
+      TournamentEntity,
+      TournamentEntryEntity,
+    ],
     migrations: [join(__dirname, 'migrations', '*.{ts,js}')],
   };
 }

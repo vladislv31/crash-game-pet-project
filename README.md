@@ -11,6 +11,7 @@ A multiplayer crash game (iGaming) over WebSockets, built to learn and experimen
 - **Reconciliation.** A job checks 8 money invariants every minute and on demand: balances against the ledger, bets against payouts ([ADR-0007](docs/adr/0007-reconciliation.md)).
 - **Observability.** One structured log event per unit of work, Prometheus metrics and a Grafana dashboard ([ADR-0005](docs/adr/0005-structured-logging.md), [ADR-0006](docs/adr/0006-metrics.md)).
 - **Load lab.** Thousands of WebSocket bots driven from a page, with every run marked on the dashboard ([ADR-0008](docs/adr/0008-load-generator.md)).
+- **Tournaments.** A switch in the lab starts a tournament: cash-outs of bets from 100 coins earn their multiplier as points in the same transaction, and a Redis sorted set serves the top 100 every 2 s and each player's place; PostgreSQL stays the source of truth and rebuilds the set after a Redis restart ([ADR-0009](docs/adr/0009-tournaments.md)).
 
 ![The Game server dashboard during load runs, with runs and steps marked](docs/images/grafana.png)
 
@@ -22,8 +23,9 @@ Built with AI-assisted development; design decisions and trade-offs are document
 flowchart TB
   players["Players<br/>React UI"] -- WebSocket --> server
   bots["Load generator<br/>WebSocket bots"] -- WebSocket --> server
-  server["Game server · NestJS<br/>game loop · bets · cash-outs · reconciliation"]
-  server --> pg[("PostgreSQL<br/>wallets · ledger · bets · rounds")]
+  server["Game server · NestJS<br/>game loop · bets · cash-outs · tournaments · reconciliation"]
+  server --> pg[("PostgreSQL<br/>wallets · ledger · bets · rounds · tournaments")]
+  server --> redis[("Redis<br/>tournament leaderboard")]
   server -- metrics --> monitoring["Prometheus + Grafana"]
 ```
 
@@ -81,6 +83,8 @@ npm start -w load-generator
 ```
 
 Pick a preset or edit the scenario and press Start. Every run and step is marked on the Grafana dashboard.
+
+The same page starts and stops a tournament (`GET`/`PUT /tournaments/active` on the game server). Performance runs are done with the tournament off, since its leaderboard broadcast adds fan-out.
 
 ![The load lab running the steady preset with 100 bots](docs/images/load-lab.png)
 
