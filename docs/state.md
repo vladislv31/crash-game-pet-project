@@ -20,6 +20,7 @@
 
 ## In progress
 
+- Deployment track: ADR-0010 containerization, `apps/game-server/Dockerfile` (multi-stage, non-root, `node` as PID 1); load-generator and web images and a compose profile for the full stack next
 - Phase 2, implemented by Claude on request, awaiting owner review and first manual run:
   - ADR-0003 (protocol, fake auth) and ADR-0004 (wallet, settlement)
   - `packages/contracts`: type-only message contract
@@ -82,6 +83,7 @@
 
 - WebSocket hardening: `maxPayload`, per-socket message rate limit, ignore messages before auth, ping/pong to drop dead connections
 - Slow consumer protection (ADR first: which messages may be dropped and when a client is disconnected): the broadcast sends to every socket without checking `bufferedAmount`, so a client that stops reading makes the server queue its ticks in memory. Skip ticks to a socket whose `bufferedAmount` is above a soft limit (only the latest multiplier matters), never drop bet and cash-out answers, balances or `round:crashed`, close the socket above a hard limit or after staying above the soft one for a while (the client reconnects and gets a snapshot); metrics for skipped ticks and slow-consumer disconnects
+- Shutdown hangs while any TCP connection to the server is open (a browser preconnect, a keep-alive from a load balancer): Nest's `app.close()` waits for `httpServer.close()`, so `docker stop` and rolling deploys end in SIGKILL after the grace period. Fix: `forceCloseConnections: true` in `NestFactory.create`, with a test that `app.close()` returns while a raw socket is open
 - Rate limit `POST /auth/login` (every new username creates a user)
 - Partial index on `bets` for `status = 'ACTIVE'`: the settlement sweep (`findUnsettledBets`) reads all of `ix_bets_round_status` every round, about 30 ms at 1M bets and growing with history
 - End-to-end WebSocket test through the real app (login → bet → cashout)
